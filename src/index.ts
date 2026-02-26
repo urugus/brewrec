@@ -32,17 +32,44 @@ program
   .command("run")
   .argument("<name>", "recipe name")
   .option("--json", "json output", false)
+  .option("--plan-only", "build execution plan and exit", false)
+  .option("--llm-command <cmd>", "local llm command for prompted variables", "claude")
   .option("--var <key=value>", "runtime variable (repeatable)", collectOptionValues, [])
-  .action(async (name: string, options: { json: boolean; var: string[] }) => {
-    await runCommand(name, { json: options.json, vars: options.var });
+  .action(
+    async (
+      name: string,
+      options: { json: boolean; var: string[]; llmCommand: string; planOnly: boolean },
+    ) => {
+      await runCommand(name, {
+        json: options.json,
+        vars: options.var,
+        llmCommand: options.llmCommand,
+        planOnly: options.planOnly,
+      });
+    },
+  );
+
+program
+  .command("plan")
+  .argument("<name>", "recipe name")
+  .option("--llm-command <cmd>", "local llm command for prompted variables", "claude")
+  .option("--var <key=value>", "runtime variable (repeatable)", collectOptionValues, [])
+  .action(async (name: string, options: { var: string[]; llmCommand: string }) => {
+    await runCommand(name, {
+      json: true,
+      vars: options.var,
+      llmCommand: options.llmCommand,
+      planOnly: true,
+    });
   });
 
 program
   .command("debug")
   .argument("<name>", "recipe name")
+  .option("--llm-command <cmd>", "local llm command for prompted variables", "claude")
   .option("--var <key=value>", "runtime variable (repeatable)", collectOptionValues, [])
-  .action(async (name: string, options: { var: string[] }) => {
-    await debugCommand(name, { vars: options.var });
+  .action(async (name: string, options: { var: string[]; llmCommand: string }) => {
+    await debugCommand(name, { vars: options.var, llmCommand: options.llmCommand });
   });
 
 program

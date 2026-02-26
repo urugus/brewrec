@@ -1,12 +1,15 @@
 import { chromium, request } from "playwright";
+import { buildExecutionPlan } from "../core/execution-plan.js";
 import { loadRecipe } from "../core/recipe-store.js";
 import { assertEffects, assertGuards } from "../core/step-validation.js";
-import { parseCliVariables, resolveRecipeStepTemplates } from "../core/template-vars.js";
+import { parseCliVariables } from "../core/template-vars.js";
 import type { RecipeStep } from "../types.js";
 
 type RunOptions = {
   json?: boolean;
   vars?: string[];
+  llmCommand?: string;
+  planOnly?: boolean;
 };
 
 async function tryClick(page: import("playwright").Page, selectors: string[]): Promise<void> {
@@ -39,11 +42,7 @@ async function tryFill(
   throw new Error(`Fill failed for selectors: ${selectors.join(", ")}`);
 }
 
-async function runPlaywrightSteps(
-  steps: RecipeStep[],
-  variables: Record<string, string>,
-  now: Date,
-): Promise<string | undefined> {
+async function runPlaywrightSteps(steps: RecipeStep[]): Promise<string | undefined> {
   if (steps.length === 0) return undefined;
 
   const browser = await chromium.launch({ headless: true });
@@ -53,44 +52,43 @@ async function runPlaywrightSteps(
     let currentUrl: string | undefined;
 
     for (const step of steps) {
-      const resolvedStep = resolveRecipeStepTemplates(step, { vars: variables, now });
-      await assertGuards(resolvedStep, { currentUrl: currentUrl ?? page.url(), page });
+      await assertGuards(step, { currentUrl: currentUrl ?? page.url(), page });
 
       const beforeUrl = currentUrl ?? page.url();
 
-      if (resolvedStep.action === "goto" && resolvedStep.url) {
-        await page.goto(resolvedStep.url, { waitUntil: "domcontentloaded" });
+      if (step.action === "goto" && step.url) {
+        await page.goto(step.url, { waitUntil: "domcontentloaded" });
         currentUrl = page.url();
-        await assertEffects(resolvedStep, { beforeUrl, currentUrl, page });
+        await assertEffects(step, { beforeUrl, currentUrl, page });
         continue;
       }
 
-      if (resolvedStep.action === "click") {
-        const selectors = resolvedStep.selectorVariants ?? [];
+      if (step.action === "click") {
+        const selectors = step.selectorVariants ?? [];
         if (selectors.length === 0) {
-          throw new Error(`No selectorVariants for click step: ${resolvedStep.id}`);
+          throw new Error(`No selectorVariants for click step: ${step.id}`);
         }
         await tryClick(page, selectors);
         currentUrl = page.url();
-        await assertEffects(resolvedStep, { beforeUrl, currentUrl, page });
+        await assertEffects(step, { beforeUrl, currentUrl, page });
         continue;
       }
 
-      if (resolvedStep.action === "fill" && resolvedStep.value !== undefined) {
-        const selectors = resolvedStep.selectorVariants ?? [];
+      if (step.action === "fill" && step.value !== undefined) {
+        const selectors = step.selectorVariants ?? [];
         if (selectors.length === 0) {
-          throw new Error(`No selectorVariants for fill step: ${resolvedStep.id}`);
+          throw new Error(`No selectorVariants for fill step: ${step.id}`);
         }
-        await tryFill(page, selectors, resolvedStep.value);
+        await tryFill(page, selectors, step.value);
         currentUrl = page.url();
-        await assertEffects(resolvedStep, { beforeUrl, currentUrl, page });
+        await assertEffects(step, { beforeUrl, currentUrl, page });
         continue;
       }
 
-      if (resolvedStep.action === "press" && resolvedStep.key) {
-        await page.keyboard.press(resolvedStep.key);
+      if (step.action === "press" && step.key) {
+        await page.keyboard.press(step.key);
         currentUrl = page.url();
-        await assertEffects(resolvedStep, { beforeUrl, currentUrl, page });
+        await assertEffects(step, { beforeUrl, currentUrl, page });
       }
     }
 
@@ -102,8 +100,6 @@ async function runPlaywrightSteps(
 
 async function runHttpSteps(
   steps: RecipeStep[],
-  variables: Record<string, string>,
-  now: Date,
   currentUrlFromPw?: string,
 ): Promise<string | undefined> {
   if (steps.length === 0) return currentUrlFromPw;
@@ -113,13 +109,12 @@ async function runHttpSteps(
     let lastFetchedUrl = currentUrlFromPw;
 
     for (const step of steps) {
-      const resolvedStep = resolveRecipeStepTemplates(step, { vars: variables, now });
-      await assertGuards(resolvedStep, { currentUrl: lastFetchedUrl });
+      await assertGuards(step, { currentUrl: lastFetchedUrl });
 
-      if (resolvedStep.action !== "fetch" || !resolvedStep.url) continue;
-      const response = await context.get(resolvedStep.url, { timeout: 5000 });
+      if (step.action !== "fetch" || !step.url) continue;
+      const response = await context.get(step.url, { timeout: 5000 });
       const responseUrl = response.url();
-      await assertEffects(resolvedStep, { beforeUrl: lastFetchedUrl, currentUrl: responseUrl });
+      await assertEffects(step, { beforeUrl: lastFetchedUrl, currentUrl: responseUrl });
       lastFetchedUrl = responseUrl;
     }
 
@@ -131,15 +126,44 @@ async function runHttpSteps(
 
 export async function runCommand(name: string, options: RunOptions): Promise<void> {
   const recipe = await loadRecipe(name);
-  const httpSteps = recipe.steps.filter((s) => s.mode === "http");
-  const pwSteps = recipe.steps.filter((s) => s.mode === "pw");
-  const variables = parseCliVariables(options.vars ?? []);
-  const now = new Date();
+  const plan = await buildExecutionPlan(recipe, {
+    cliVars: parseCliVariables(options.vars ?? []),
+    llmCommand: options.llmCommand,
+  });
 
-  const lastPwUrl = await runPlaywrightSteps(pwSteps, variables, now);
-  await runHttpSteps(httpSteps, variables, now, lastPwUrl);
+  if (plan.unresolvedVars.length > 0) {
+    const message = `Unresolved variables: ${plan.unresolvedVars.join(", ")}`;
+    if (options.json) {
+      process.stdout.write(
+        `${JSON.stringify({ name, version: recipe.version, ok: false, phase: "plan", ...plan })}\n`,
+      );
+    }
+    throw new Error(message);
+  }
+
+  if (options.planOnly) {
+    process.stdout.write(
+      `${JSON.stringify({ name, version: recipe.version, ok: true, phase: "plan", ...plan })}\n`,
+    );
+    return;
+  }
+
+  const httpSteps = plan.steps.filter((s) => s.mode === "http");
+  const pwSteps = plan.steps.filter((s) => s.mode === "pw");
+
+  const lastPwUrl = await runPlaywrightSteps(pwSteps);
+  await runHttpSteps(httpSteps, lastPwUrl);
 
   if (options.json) {
-    process.stdout.write(`${JSON.stringify({ name, version: recipe.version, ok: true })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({
+        name,
+        version: recipe.version,
+        ok: true,
+        phase: "execute",
+        resolvedVars: plan.resolvedVars,
+        warnings: plan.warnings,
+      })}\n`,
+    );
   }
 }

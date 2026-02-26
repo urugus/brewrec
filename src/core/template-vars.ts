@@ -47,6 +47,20 @@ function resolveToken(token: string, context: TemplateContext): string {
   throw new Error(`Unknown template variable: ${token}`);
 }
 
+export function isBuiltinTemplateToken(token: string): boolean {
+  return token === "now" || TODAY_PATTERN.test(token);
+}
+
+export function listTemplateTokens(value: string): string[] {
+  const tokens = new Set<string>();
+  for (const match of value.matchAll(TEMPLATE_PATTERN)) {
+    const raw = match[1];
+    if (!raw) continue;
+    tokens.add(raw.trim());
+  }
+  return [...tokens];
+}
+
 export function resolveTemplateString(value: string, context: TemplateContext = {}): string {
   return value.replace(TEMPLATE_PATTERN, (_full, token) =>
     resolveToken(String(token).trim(), context),
@@ -95,4 +109,23 @@ export function parseCliVariables(raw: string[]): Record<string, string> {
   }
 
   return vars;
+}
+
+export function collectStepTemplateTokens(step: RecipeStep): string[] {
+  const tokens = new Set<string>();
+
+  const collect = (value?: string): void => {
+    if (!value) return;
+    for (const token of listTemplateTokens(value)) {
+      tokens.add(token);
+    }
+  };
+
+  collect(step.url);
+  collect(step.value);
+  for (const selector of step.selectorVariants ?? []) collect(selector);
+  for (const guard of step.guards ?? []) collect(guard.value);
+  for (const effect of step.effects ?? []) collect(effect.value);
+
+  return [...tokens];
 }
