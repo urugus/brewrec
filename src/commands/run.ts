@@ -99,19 +99,21 @@ async function runHttpSteps(
   if (steps.length === 0) return currentUrlFromPw;
 
   const context = await request.newContext();
-  let currentUrl = currentUrlFromPw;
+  const guardUrl = currentUrlFromPw;
+  let lastFetchedUrl = currentUrlFromPw;
 
   for (const step of steps) {
-    await assertGuards(step, { currentUrl });
+    await assertGuards(step, { currentUrl: guardUrl });
 
     if (step.action !== "fetch" || !step.url) continue;
     const response = await context.get(step.url, { timeout: 5000 });
-    currentUrl = response.url();
-    await assertEffects(step, { beforeUrl: undefined, currentUrl });
+    const responseUrl = response.url();
+    await assertEffects(step, { beforeUrl: lastFetchedUrl, currentUrl: responseUrl });
+    lastFetchedUrl = responseUrl;
   }
 
   await context.dispose();
-  return currentUrl;
+  return lastFetchedUrl;
 }
 
 export async function runCommand(name: string, options: RunOptions): Promise<void> {
