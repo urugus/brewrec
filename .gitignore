@@ -1,0 +1,26 @@
+node_modules/
+dist/
+package-lock.json
+
+# user data
+recordings/*
+artifacts/*
+recipes/*
+!recordings/.gitkeep
+!artifacts/.gitkeep
+!recipes/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Environment
+.env
+.env.*

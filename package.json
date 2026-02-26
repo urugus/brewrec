@@ -1,0 +1,42 @@
+{
+  "name": "browrec",
+  "version": "0.1.0",
+  "description": "Record browser actions with LLM-assisted mode and replay fast without LLM",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "browrec": "dist/index.js"
+  },
+  "files": ["dist", "public", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "lint": "biome check . && tsc --noEmit",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "postinstall": "playwright install chromium",
+    "prepare": "npm run build"
+  },
+  "keywords": ["cli", "playwright", "automation", "scraping", "llm"],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "express": "^4.21.2",
+    "open": "^10.1.0",
+    "playwright": "^1.51.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^2.1.8"
+  }
+}
