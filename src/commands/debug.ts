@@ -8,7 +8,7 @@ type DebugOptions = {
   llmCommand?: string;
 };
 
-export async function debugCommand(name: string, options: DebugOptions): Promise<void> {
+export const debugCommand = async (name: string, options: DebugOptions): Promise<void> => {
   const recipe = await loadRecipe(name);
   const plan = await buildExecutionPlan(recipe, {
     cliVars: parseCliVariables(options.vars ?? []),
@@ -45,4 +45,4 @@ export async function debugCommand(name: string, options: DebugOptions): Promise
 
   await page.pause();
   await browser.close();
-}
+};

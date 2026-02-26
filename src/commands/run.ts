@@ -12,7 +12,7 @@ type RunOptions = {
   planOnly?: boolean;
 };
 
-async function tryClick(page: import("playwright").Page, selectors: string[]): Promise<void> {
+const tryClick = async (page: import("playwright").Page, selectors: string[]): Promise<void> => {
   for (const selector of selectors) {
     try {
       await page.locator(selector).first().click({ timeout: 1200 });
@@ -23,13 +23,13 @@ async function tryClick(page: import("playwright").Page, selectors: string[]): P
   }
 
   throw new Error(`Click failed for selectors: ${selectors.join(", ")}`);
-}
+};
 
-async function tryFill(
+const tryFill = async (
   page: import("playwright").Page,
   selectors: string[],
   value: string,
-): Promise<void> {
+): Promise<void> => {
   for (const selector of selectors) {
     try {
       await page.locator(selector).first().fill(value, { timeout: 1200 });
@@ -40,9 +40,9 @@ async function tryFill(
   }
 
   throw new Error(`Fill failed for selectors: ${selectors.join(", ")}`);
-}
+};
 
-async function runPlaywrightSteps(steps: RecipeStep[]): Promise<string | undefined> {
+const runPlaywrightSteps = async (steps: RecipeStep[]): Promise<string | undefined> => {
   if (steps.length === 0) return undefined;
 
   const browser = await chromium.launch({ headless: true });
@@ -96,12 +96,12 @@ async function runPlaywrightSteps(steps: RecipeStep[]): Promise<string | undefin
   } finally {
     await browser.close();
   }
-}
+};
 
-async function runHttpSteps(
+const runHttpSteps = async (
   steps: RecipeStep[],
   currentUrlFromPw?: string,
-): Promise<string | undefined> {
+): Promise<string | undefined> => {
   if (steps.length === 0) return currentUrlFromPw;
 
   const context = await request.newContext();
@@ -122,9 +122,9 @@ async function runHttpSteps(
   } finally {
     await context.dispose();
   }
-}
+};
 
-export async function runCommand(name: string, options: RunOptions): Promise<void> {
+export const runCommand = async (name: string, options: RunOptions): Promise<void> => {
   const recipe = await loadRecipe(name);
   const plan = await buildExecutionPlan(recipe, {
     cliVars: parseCliVariables(options.vars ?? []),
@@ -166,4 +166,4 @@ export async function runCommand(name: string, options: RunOptions): Promise<voi
       })}\n`,
     );
   }
-}
+};

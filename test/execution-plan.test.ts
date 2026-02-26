@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildExecutionPlan } from "../src/core/execution-plan.js";
 import type { Recipe } from "../src/types.js";
 
-function baseRecipe(): Recipe {
+const baseRecipe = (): Recipe => {
   return {
     schemaVersion: 1,
     id: "sample",
@@ -26,7 +26,7 @@ function baseRecipe(): Recipe {
       allowRepair: true,
     },
   };
-}
+};
 
 describe("execution plan", () => {
   it("resolves cli, builtin, and prompted variables", async () => {
