@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { eventsToSteps, isDocumentDownload, isStaticAsset } from "../src/core/compile-heuristic.js";
+import {
+  eventsToCompileResult,
+  eventsToSteps,
+  isApiCandidate,
+  isDocumentDownload,
+  isStaticAsset,
+} from "../src/core/compile-heuristic.js";
 import type { RecordedEvent } from "../src/types.js";
 
 describe("isStaticAsset", () => {
@@ -38,6 +44,44 @@ describe("isDocumentDownload", () => {
   });
 });
 
+describe("isApiCandidate", () => {
+  it("promotes API-like request with JSON response", () => {
+    const requestEvent: RecordedEvent = {
+      ts: "2026-02-26T00:00:02.000Z",
+      type: "request",
+      url: "https://example.com/search",
+      requestUrl: "https://example.com/api/search?q=foo",
+      method: "GET",
+      headers: { accept: "application/json" },
+    };
+
+    expect(
+      isApiCandidate(requestEvent, {
+        status: 200,
+        contentType: "application/json",
+      }),
+    ).toBe(true);
+  });
+
+  it("skips HTML page request", () => {
+    const requestEvent: RecordedEvent = {
+      ts: "2026-02-26T00:00:02.000Z",
+      type: "request",
+      url: "https://example.com/search",
+      requestUrl: "https://example.com/search?q=foo",
+      method: "GET",
+      headers: { accept: "text/html" },
+    };
+
+    expect(
+      isApiCandidate(requestEvent, {
+        status: 200,
+        contentType: "text/html",
+      }),
+    ).toBe(false);
+  });
+});
+
 describe("eventsToSteps", () => {
   it("converts navigation/input/request into mixed-mode steps", () => {
     const events: RecordedEvent[] = [
@@ -57,9 +101,19 @@ describe("eventsToSteps", () => {
       },
       {
         ts: "2026-02-26T00:00:02.000Z",
+        type: "response",
+        url: "https://example.com",
+        responseUrl: "https://example.com/api/search?q=foo",
+        headers: { "content-type": "application/json" },
+        status: 200,
+      },
+      {
+        ts: "2026-02-26T00:00:02.000Z",
         type: "request",
         url: "https://example.com",
         requestUrl: "https://example.com/api/search?q=foo",
+        method: "GET",
+        headers: { accept: "application/json" },
       },
     ];
 
@@ -71,18 +125,12 @@ describe("eventsToSteps", () => {
     expect(steps[2]?.mode).toBe("http");
   });
 
-  it("filters out static assets and keeps document downloads", () => {
+  it("filters static assets, keeps documents, and deduplicates requests", () => {
     const events: RecordedEvent[] = [
       {
         ts: "2026-02-26T00:00:00.000Z",
         type: "navigation",
         url: "https://example.com",
-      },
-      {
-        ts: "2026-02-26T00:00:01.000Z",
-        type: "request",
-        url: "https://example.com",
-        requestUrl: "https://example.com",
       },
       {
         ts: "2026-02-26T00:00:01.000Z",
@@ -94,37 +142,40 @@ describe("eventsToSteps", () => {
         ts: "2026-02-26T00:00:01.000Z",
         type: "request",
         url: "https://example.com",
-        requestUrl: "https://fonts.googleapis.com/css2?family=Roboto",
-      },
-      {
-        ts: "2026-02-26T00:00:01.000Z",
-        type: "request",
-        url: "https://example.com",
-        requestUrl: "https://example.com/logo.png",
+        requestUrl: "https://example.com/report.pdf",
       },
       {
         ts: "2026-02-26T00:00:02.000Z",
-        type: "request",
+        type: "response",
         url: "https://example.com",
-        requestUrl: "https://example.com/report.pdf",
+        responseUrl: "https://example.com/api/data",
+        headers: { "content-type": "application/json" },
+        status: 200,
       },
       {
         ts: "2026-02-26T00:00:03.000Z",
         type: "request",
         url: "https://example.com",
         requestUrl: "https://example.com/api/data",
+        method: "GET",
+        headers: { accept: "application/json" },
+      },
+      {
+        ts: "2026-02-26T00:00:04.000Z",
+        type: "request",
+        url: "https://example.com",
+        requestUrl: "https://example.com/api/data",
+        method: "GET",
+        headers: { accept: "application/json" },
       },
     ];
 
-    const steps = eventsToSteps(events);
+    const { steps, stats } = eventsToCompileResult(events);
 
     expect(steps).toHaveLength(3);
     expect(steps[0]?.action).toBe("goto");
-    expect(steps[1]?.action).toBe("fetch");
     expect(steps[1]?.title).toBe("Download document");
-    expect(steps[1]?.url).toBe("https://example.com/report.pdf");
-    expect(steps[2]?.action).toBe("fetch");
     expect(steps[2]?.title).toBe("Fetch API");
-    expect(steps[2]?.url).toBe("https://example.com/api/data");
+    expect(stats.httpPromoted).toBe(2);
   });
 });
