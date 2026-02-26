@@ -47,56 +47,57 @@ async function runPlaywrightSteps(
   if (steps.length === 0) return undefined;
 
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
-  const page = await context.newPage();
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    let currentUrl: string | undefined;
 
-  let currentUrl: string | undefined;
+    for (const step of steps) {
+      const resolvedStep = resolveRecipeStepTemplates(step, { vars: variables, now });
+      await assertGuards(resolvedStep, { currentUrl: currentUrl ?? page.url(), page });
 
-  for (const step of steps) {
-    const resolvedStep = resolveRecipeStepTemplates(step, { vars: variables, now });
-    await assertGuards(resolvedStep, { currentUrl: currentUrl ?? page.url(), page });
+      const beforeUrl = currentUrl ?? page.url();
 
-    const beforeUrl = currentUrl ?? page.url();
-
-    if (resolvedStep.action === "goto" && resolvedStep.url) {
-      await page.goto(resolvedStep.url, { waitUntil: "domcontentloaded" });
-      currentUrl = page.url();
-      await assertEffects(resolvedStep, { beforeUrl, currentUrl, page });
-      continue;
-    }
-
-    if (resolvedStep.action === "click") {
-      const selectors = resolvedStep.selectorVariants ?? [];
-      if (selectors.length === 0) {
-        throw new Error(`No selectorVariants for click step: ${resolvedStep.id}`);
+      if (resolvedStep.action === "goto" && resolvedStep.url) {
+        await page.goto(resolvedStep.url, { waitUntil: "domcontentloaded" });
+        currentUrl = page.url();
+        await assertEffects(resolvedStep, { beforeUrl, currentUrl, page });
+        continue;
       }
-      await tryClick(page, selectors);
-      currentUrl = page.url();
-      await assertEffects(resolvedStep, { beforeUrl, currentUrl, page });
-      continue;
-    }
 
-    if (resolvedStep.action === "fill" && resolvedStep.value !== undefined) {
-      const selectors = resolvedStep.selectorVariants ?? [];
-      if (selectors.length === 0) {
-        throw new Error(`No selectorVariants for fill step: ${resolvedStep.id}`);
+      if (resolvedStep.action === "click") {
+        const selectors = resolvedStep.selectorVariants ?? [];
+        if (selectors.length === 0) {
+          throw new Error(`No selectorVariants for click step: ${resolvedStep.id}`);
+        }
+        await tryClick(page, selectors);
+        currentUrl = page.url();
+        await assertEffects(resolvedStep, { beforeUrl, currentUrl, page });
+        continue;
       }
-      await tryFill(page, selectors, resolvedStep.value);
-      currentUrl = page.url();
-      await assertEffects(resolvedStep, { beforeUrl, currentUrl, page });
-      continue;
+
+      if (resolvedStep.action === "fill" && resolvedStep.value !== undefined) {
+        const selectors = resolvedStep.selectorVariants ?? [];
+        if (selectors.length === 0) {
+          throw new Error(`No selectorVariants for fill step: ${resolvedStep.id}`);
+        }
+        await tryFill(page, selectors, resolvedStep.value);
+        currentUrl = page.url();
+        await assertEffects(resolvedStep, { beforeUrl, currentUrl, page });
+        continue;
+      }
+
+      if (resolvedStep.action === "press" && resolvedStep.key) {
+        await page.keyboard.press(resolvedStep.key);
+        currentUrl = page.url();
+        await assertEffects(resolvedStep, { beforeUrl, currentUrl, page });
+      }
     }
 
-    if (resolvedStep.action === "press" && resolvedStep.key) {
-      await page.keyboard.press(resolvedStep.key);
-      currentUrl = page.url();
-      await assertEffects(resolvedStep, { beforeUrl, currentUrl, page });
-    }
+    return currentUrl ?? page.url();
+  } finally {
+    await browser.close();
   }
-
-  const lastUrl = currentUrl ?? page.url();
-  await browser.close();
-  return lastUrl;
 }
 
 async function runHttpSteps(
@@ -108,22 +109,24 @@ async function runHttpSteps(
   if (steps.length === 0) return currentUrlFromPw;
 
   const context = await request.newContext();
-  const guardUrl = currentUrlFromPw;
-  let lastFetchedUrl = currentUrlFromPw;
+  try {
+    let lastFetchedUrl = currentUrlFromPw;
 
-  for (const step of steps) {
-    const resolvedStep = resolveRecipeStepTemplates(step, { vars: variables, now });
-    await assertGuards(resolvedStep, { currentUrl: guardUrl });
+    for (const step of steps) {
+      const resolvedStep = resolveRecipeStepTemplates(step, { vars: variables, now });
+      await assertGuards(resolvedStep, { currentUrl: lastFetchedUrl });
 
-    if (resolvedStep.action !== "fetch" || !resolvedStep.url) continue;
-    const response = await context.get(resolvedStep.url, { timeout: 5000 });
-    const responseUrl = response.url();
-    await assertEffects(resolvedStep, { beforeUrl: lastFetchedUrl, currentUrl: responseUrl });
-    lastFetchedUrl = responseUrl;
+      if (resolvedStep.action !== "fetch" || !resolvedStep.url) continue;
+      const response = await context.get(resolvedStep.url, { timeout: 5000 });
+      const responseUrl = response.url();
+      await assertEffects(resolvedStep, { beforeUrl: lastFetchedUrl, currentUrl: responseUrl });
+      lastFetchedUrl = responseUrl;
+    }
+
+    return lastFetchedUrl;
+  } finally {
+    await context.dispose();
   }
-
-  await context.dispose();
-  return lastFetchedUrl;
 }
 
 export async function runCommand(name: string, options: RunOptions): Promise<void> {
