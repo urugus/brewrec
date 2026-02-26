@@ -60,6 +60,9 @@ browrec compile <name> --llm-command claude
 # recipeを高速実行（LLMなし）
 browrec run <name> --json
 
+# 実行前にプランだけ作る（JSON出力）
+browrec plan <name> --var tenant=acme
+
 # 実行時変数（繰り返し指定可）
 browrec run <name> --var keyword=notebook --var tenant=acme
 
@@ -104,6 +107,9 @@ src/
   - `selectorVariants`
   - `allowRepair`
 - `version`
+- `variables[]`（任意）
+  - `name`, `required`, `type`, `pattern`
+  - `resolver.type`: `cli | builtin | prompted`
 
 ## 開発
 
@@ -155,6 +161,26 @@ npm run build
   - `{{now}}` (ISO8601)
 - 任意変数:
   - `--var key=value` で渡した値を `{{key}}` で参照
+
+`recipe.variables` を使うと、変数の決定方法を宣言できます。
+
+```json
+{
+  "variables": [
+    { "name": "tenant", "required": true, "resolver": { "type": "cli" } },
+    { "name": "targetDate", "type": "date", "resolver": { "type": "builtin", "expr": "today+1d" } },
+    {
+      "name": "searchKeyword",
+      "resolver": {
+        "type": "prompted",
+        "promptTemplate": "次のテナント向け検索語を1行で出力: {{tenant}}"
+      }
+    }
+  ]
+}
+```
+
+`prompted` は `run/debug/plan --llm-command <cmd>` で解決され、`--var` が同名で与えられた場合は `--var` が優先されます。
 
 例:
 

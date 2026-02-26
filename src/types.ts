@@ -67,6 +67,30 @@ export type FallbackPlan = {
   allowRepair: boolean;
 };
 
+export type VariableResolver =
+  | {
+      type: "cli";
+      key?: string;
+    }
+  | {
+      type: "builtin";
+      expr: string;
+    }
+  | {
+      type: "prompted";
+      promptTemplate: string;
+    };
+
+export type RecipeVariable = {
+  name: string;
+  description?: string;
+  required?: boolean;
+  type?: "string" | "date";
+  pattern?: string;
+  defaultValue?: string;
+  resolver?: VariableResolver;
+};
+
 export type Recipe = {
   schemaVersion: number;
   id: string;
@@ -76,6 +100,7 @@ export type Recipe = {
   updatedAt: string;
   source: "compiled" | "repaired";
   steps: RecipeStep[];
+  variables?: RecipeVariable[];
   fallback: FallbackPlan;
   notes?: string;
 };

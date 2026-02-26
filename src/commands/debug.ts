@@ -1,15 +1,23 @@
 import { chromium } from "playwright";
+import { buildExecutionPlan } from "../core/execution-plan.js";
 import { loadRecipe } from "../core/recipe-store.js";
-import { parseCliVariables, resolveRecipeStepTemplates } from "../core/template-vars.js";
+import { parseCliVariables } from "../core/template-vars.js";
 
 type DebugOptions = {
   vars?: string[];
+  llmCommand?: string;
 };
 
 export async function debugCommand(name: string, options: DebugOptions): Promise<void> {
   const recipe = await loadRecipe(name);
-  const variables = parseCliVariables(options.vars ?? []);
-  const now = new Date();
+  const plan = await buildExecutionPlan(recipe, {
+    cliVars: parseCliVariables(options.vars ?? []),
+    llmCommand: options.llmCommand,
+  });
+  if (plan.unresolvedVars.length > 0) {
+    throw new Error(`Unresolved variables: ${plan.unresolvedVars.join(", ")}`);
+  }
+
   const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext({
     recordVideo: {
@@ -19,21 +27,19 @@ export async function debugCommand(name: string, options: DebugOptions): Promise
   });
   const page = await context.newPage();
 
-  for (const step of recipe.steps) {
-    const resolvedStep = resolveRecipeStepTemplates(step, { vars: variables, now });
-
-    if (resolvedStep.action === "goto" && resolvedStep.url) {
-      await page.goto(resolvedStep.url);
+  for (const step of plan.steps) {
+    if (step.action === "goto" && step.url) {
+      await page.goto(step.url);
       continue;
     }
-    if (resolvedStep.action === "click") {
-      const selector = resolvedStep.selectorVariants?.[0];
+    if (step.action === "click") {
+      const selector = step.selectorVariants?.[0];
       if (selector) await page.locator(selector).first().click();
       continue;
     }
-    if (resolvedStep.action === "fill" && resolvedStep.value !== undefined) {
-      const selector = resolvedStep.selectorVariants?.[0];
-      if (selector) await page.locator(selector).first().fill(resolvedStep.value);
+    if (step.action === "fill" && step.value !== undefined) {
+      const selector = step.selectorVariants?.[0];
+      if (selector) await page.locator(selector).first().fill(step.value);
     }
   }
 
