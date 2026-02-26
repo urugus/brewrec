@@ -10,11 +10,11 @@ type RecordOptions = {
   url: string;
 };
 
-function nowIso(): string {
+const nowIso = (): string => {
   return new Date().toISOString();
-}
+};
 
-async function wirePageEvents(name: string, page: Page): Promise<void> {
+const wirePageEvents = async (name: string, page: Page): Promise<void> => {
   await page.exposeBinding(
     "__browrec_push",
     async (_source, payload: Omit<RecordedEvent, "ts" | "url">) => {
@@ -170,9 +170,9 @@ async function wirePageEvents(name: string, page: Page): Promise<void> {
       value: message.text(),
     });
   });
-}
+};
 
-export async function recordCommand(name: string, options: RecordOptions): Promise<void> {
+export const recordCommand = async (name: string, options: RecordOptions): Promise<void> => {
   await initRecording(name);
 
   const browser = await chromium.launch({ headless: false });
@@ -184,4 +184,4 @@ export async function recordCommand(name: string, options: RecordOptions): Promi
 
   await page.waitForEvent("close");
   await browser.close();
-}
+};

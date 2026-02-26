@@ -24,11 +24,11 @@ export type BuildExecutionPlanOptions = {
   promptRunner?: PromptRunner;
 };
 
-function isDateValue(value: string): boolean {
+const isDateValue = (value: string): boolean => {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
-}
+};
 
-function validateResolvedVariable(variable: RecipeVariable, value: string): void {
+const validateResolvedVariable = (variable: RecipeVariable, value: string): void => {
   if (variable.type === "date" && !isDateValue(value)) {
     throw new Error(`Variable ${variable.name} must be date format YYYY-MM-DD`);
   }
@@ -39,21 +39,21 @@ function validateResolvedVariable(variable: RecipeVariable, value: string): void
       throw new Error(`Variable ${variable.name} does not match pattern: ${variable.pattern}`);
     }
   }
-}
+};
 
-function pickPromptValue(output: string): string {
+const pickPromptValue = (output: string): string => {
   const firstNonEmpty = output
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find((line) => line.length > 0);
   return firstNonEmpty ?? "";
-}
+};
 
-async function resolveVariableBySpec(
+const resolveVariableBySpec = async (
   variable: RecipeVariable,
   resolvedVars: Record<string, string>,
   context: { now: Date; llmCommand?: string; promptRunner: PromptRunner },
-): Promise<string | undefined> {
+): Promise<string | undefined> => {
   const resolver = variable.resolver;
 
   if (!resolver || resolver.type === "cli") {
@@ -74,12 +74,12 @@ async function resolveVariableBySpec(
   const value = pickPromptValue(output);
   if (!value) return undefined;
   return value;
-}
+};
 
-export async function buildExecutionPlan(
+export const buildExecutionPlan = async (
   recipe: Recipe,
   options: BuildExecutionPlanOptions = {},
-): Promise<ExecutionPlan> {
+): Promise<ExecutionPlan> => {
   const now = options.now ?? new Date();
   const promptRunner = options.promptRunner ?? runLocalClaude;
   const resolvedVars: Record<string, string> = { ...(options.cliVars ?? {}) };
@@ -133,4 +133,4 @@ export async function buildExecutionPlan(
     warnings,
     steps: resolvedSteps,
   };
-}
+};

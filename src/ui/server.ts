@@ -5,7 +5,7 @@ import open from "open";
 import { PUBLIC_DIR } from "../core/paths.js";
 import { listRecipes, loadRecipe, saveRecipe } from "../core/recipe-store.js";
 
-export async function startUiServer(port = 4312): Promise<void> {
+export const startUiServer = async (port = 4312): Promise<void> => {
   const app = express();
   app.use(express.json({ limit: "2mb" }));
   app.use(express.static(PUBLIC_DIR));
@@ -54,4 +54,4 @@ export async function startUiServer(port = 4312): Promise<void> {
     process.stdout.write(`UI: ${url}\n`);
     await open(url);
   });
-}
+};

@@ -12,14 +12,14 @@ type EffectContext = {
   page?: Page;
 };
 
-function matchesUrl(pattern: string, currentUrl: string): boolean {
+const matchesUrl = (pattern: string, currentUrl: string): boolean => {
   if (pattern.endsWith("*")) {
     return currentUrl.startsWith(pattern.slice(0, -1));
   }
   return currentUrl === pattern;
-}
+};
 
-async function evaluateGuard(guard: Guard, context: GuardContext): Promise<boolean> {
+const evaluateGuard = async (guard: Guard, context: GuardContext): Promise<boolean> => {
   const currentUrl = context.currentUrl;
 
   if (guard.type === "url_is") {
@@ -40,9 +40,9 @@ async function evaluateGuard(guard: Guard, context: GuardContext): Promise<boole
   }
 
   return true;
-}
+};
 
-function parseMinItems(value: string): { selector: string; count: number } | null {
+const parseMinItems = (value: string): { selector: string; count: number } | null => {
   const [selector, rawCount] = value.split("|");
   if (!selector || !rawCount) return null;
 
@@ -50,9 +50,9 @@ function parseMinItems(value: string): { selector: string; count: number } | nul
   if (!Number.isFinite(count) || count < 0) return null;
 
   return { selector, count };
-}
+};
 
-async function evaluateEffect(effect: Effect, context: EffectContext): Promise<boolean> {
+const evaluateEffect = async (effect: Effect, context: EffectContext): Promise<boolean> => {
   if (effect.type === "url_changed") {
     if (!context.currentUrl) return true;
     if (effect.value) return context.currentUrl === effect.value;
@@ -82,22 +82,22 @@ async function evaluateEffect(effect: Effect, context: EffectContext): Promise<b
   }
 
   return true;
-}
+};
 
-export async function assertGuards(step: RecipeStep, context: GuardContext): Promise<void> {
+export const assertGuards = async (step: RecipeStep, context: GuardContext): Promise<void> => {
   for (const guard of step.guards ?? []) {
     const ok = await evaluateGuard(guard, context);
     if (!ok) {
       throw new Error(`Guard failed: ${guard.type}=${guard.value} (step=${step.id})`);
     }
   }
-}
+};
 
-export async function assertEffects(step: RecipeStep, context: EffectContext): Promise<void> {
+export const assertEffects = async (step: RecipeStep, context: EffectContext): Promise<void> => {
   for (const effect of step.effects ?? []) {
     const ok = await evaluateEffect(effect, context);
     if (!ok) {
       throw new Error(`Effect failed: ${effect.type}=${effect.value} (step=${step.id})`);
     }
   }
-}
+};

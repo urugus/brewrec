@@ -1,6 +1,6 @@
 import { loadRecipe, saveRecipe } from "../core/recipe-store.js";
 
-export async function repairCommand(name: string): Promise<void> {
+export const repairCommand = async (name: string): Promise<void> => {
   const recipe = await loadRecipe(name);
 
   const patched = {
@@ -16,4 +16,4 @@ export async function repairCommand(name: string): Promise<void> {
   };
 
   await saveRecipe(patched);
-}
+};

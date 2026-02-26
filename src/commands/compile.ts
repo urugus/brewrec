@@ -9,16 +9,16 @@ type CompileOptions = {
   llmCommand?: string;
 };
 
-function buildPrompt(events: RecordedEvent[]): string {
+const buildPrompt = (events: RecordedEvent[]): string => {
   const sample = events.slice(0, 40);
   return [
     "You are compiling browser actions to robust recipe intents.",
     "Summarize user intent in Japanese as short bullet list.",
     JSON.stringify(sample),
   ].join("\n\n");
-}
+};
 
-export async function compileCommand(name: string, options: CompileOptions): Promise<void> {
+export const compileCommand = async (name: string, options: CompileOptions): Promise<void> => {
   const events = await readRecordedEvents(name);
   const { steps, stats } = eventsToCompileResult(events);
 
@@ -53,4 +53,4 @@ export async function compileCommand(name: string, options: CompileOptions): Pro
   };
 
   await saveRecipe(recipe);
-}
+};

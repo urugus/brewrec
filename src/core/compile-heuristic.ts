@@ -21,15 +21,15 @@ export type CompileResult = {
   stats: CompileStats;
 };
 
-export function isStaticAsset(url: string): boolean {
+export const isStaticAsset = (url: string): boolean => {
   return STATIC_ASSET_RE.test(url) || STATIC_HOST_RE.test(url);
-}
+};
 
-export function isDocumentDownload(url: string): boolean {
+export const isDocumentDownload = (url: string): boolean => {
   return /\.(?:pdf|docx?|xlsx?|csv|zip|tar\.gz)(?:\?|$)/i.test(url);
-}
+};
 
-function buildResponseMap(events: RecordedEvent[]): Map<string, ResponseInfo> {
+const buildResponseMap = (events: RecordedEvent[]): Map<string, ResponseInfo> => {
   const map = new Map<string, ResponseInfo>();
   for (const event of events) {
     if (event.type !== "response" || !event.responseUrl) continue;
@@ -39,17 +39,17 @@ function buildResponseMap(events: RecordedEvent[]): Map<string, ResponseInfo> {
     });
   }
   return map;
-}
+};
 
-function getPath(url: string): string {
+const getPath = (url: string): string => {
   try {
     return new URL(url).pathname.toLowerCase();
   } catch {
     return "";
   }
-}
+};
 
-export function isApiCandidate(requestEvent: RecordedEvent, response?: ResponseInfo): boolean {
+export const isApiCandidate = (requestEvent: RecordedEvent, response?: ResponseInfo): boolean => {
   if (!requestEvent.requestUrl) return false;
   const reqUrl = requestEvent.requestUrl;
 
@@ -81,15 +81,15 @@ export function isApiCandidate(requestEvent: RecordedEvent, response?: ResponseI
   if (response?.status && response.status >= 400) return false;
 
   return score >= 2;
-}
+};
 
-function eventToStep(
+const eventToStep = (
   event: RecordedEvent,
   index: number,
   navigationUrls: Set<string>,
   responseMap: Map<string, ResponseInfo>,
   seenRequestUrls: Set<string>,
-): RecipeStep | null {
+): RecipeStep | null => {
   const id = `step-${index + 1}`;
 
   if (event.type === "navigation") {
@@ -160,9 +160,9 @@ function eventToStep(
   }
 
   return null;
-}
+};
 
-export function eventsToCompileResult(events: RecordedEvent[]): CompileResult {
+export const eventsToCompileResult = (events: RecordedEvent[]): CompileResult => {
   const navigationUrls = new Set(events.filter((e) => e.type === "navigation").map((e) => e.url));
   const responseMap = buildResponseMap(events);
   const seenRequestUrls = new Set<string>();
@@ -181,8 +181,8 @@ export function eventsToCompileResult(events: RecordedEvent[]): CompileResult {
       httpSkipped: Math.max(allRequestCount - httpPromoted, 0),
     },
   };
-}
+};
 
-export function eventsToSteps(events: RecordedEvent[]): RecipeStep[] {
+export const eventsToSteps = (events: RecordedEvent[]): RecipeStep[] => {
   return eventsToCompileResult(events).steps;
-}
+};
