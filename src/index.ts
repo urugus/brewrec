@@ -8,6 +8,7 @@ import { runCommand } from "./commands/run.js";
 import { startUiServer } from "./ui/server.js";
 
 const program = new Command();
+const collectOptionValues = (value: string, previous: string[]): string[] => [...previous, value];
 
 program.name("browrec").description("Browser record/compile/run CLI").version("0.1.0");
 
@@ -31,15 +32,17 @@ program
   .command("run")
   .argument("<name>", "recipe name")
   .option("--json", "json output", false)
-  .action(async (name: string, options: { json: boolean }) => {
-    await runCommand(name, options);
+  .option("--var <key=value>", "runtime variable (repeatable)", collectOptionValues, [])
+  .action(async (name: string, options: { json: boolean; var: string[] }) => {
+    await runCommand(name, { json: options.json, vars: options.var });
   });
 
 program
   .command("debug")
   .argument("<name>", "recipe name")
-  .action(async (name: string) => {
-    await debugCommand(name);
+  .option("--var <key=value>", "runtime variable (repeatable)", collectOptionValues, [])
+  .action(async (name: string, options: { var: string[] }) => {
+    await debugCommand(name, { vars: options.var });
   });
 
 program

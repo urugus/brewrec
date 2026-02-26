@@ -1,8 +1,15 @@
 import { chromium } from "playwright";
 import { loadRecipe } from "../core/recipe-store.js";
+import { parseCliVariables, resolveRecipeStepTemplates } from "../core/template-vars.js";
 
-export async function debugCommand(name: string): Promise<void> {
+type DebugOptions = {
+  vars?: string[];
+};
+
+export async function debugCommand(name: string, options: DebugOptions): Promise<void> {
   const recipe = await loadRecipe(name);
+  const variables = parseCliVariables(options.vars ?? []);
+  const now = new Date();
   const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext({
     recordVideo: {
@@ -13,18 +20,20 @@ export async function debugCommand(name: string): Promise<void> {
   const page = await context.newPage();
 
   for (const step of recipe.steps) {
-    if (step.action === "goto" && step.url) {
-      await page.goto(step.url);
+    const resolvedStep = resolveRecipeStepTemplates(step, { vars: variables, now });
+
+    if (resolvedStep.action === "goto" && resolvedStep.url) {
+      await page.goto(resolvedStep.url);
       continue;
     }
-    if (step.action === "click") {
-      const selector = step.selectorVariants?.[0];
+    if (resolvedStep.action === "click") {
+      const selector = resolvedStep.selectorVariants?.[0];
       if (selector) await page.locator(selector).first().click();
       continue;
     }
-    if (step.action === "fill" && step.value !== undefined) {
-      const selector = step.selectorVariants?.[0];
-      if (selector) await page.locator(selector).first().fill(step.value);
+    if (resolvedStep.action === "fill" && resolvedStep.value !== undefined) {
+      const selector = resolvedStep.selectorVariants?.[0];
+      if (selector) await page.locator(selector).first().fill(resolvedStep.value);
     }
   }
 

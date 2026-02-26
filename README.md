@@ -60,6 +60,9 @@ browrec compile <name> --llm-command claude
 # recipeを高速実行（LLMなし）
 browrec run <name> --json
 
+# 実行時変数（繰り返し指定可）
+browrec run <name> --var keyword=notebook --var tenant=acme
+
 # 失敗再現用デバッグ（GUI + video）
 browrec debug <name>
 
@@ -141,3 +144,24 @@ npm run build
 - 失敗ステップ単位の差分パッチ生成（真の部分再学習）
 - `guards/effects` の表現力拡張（URLパターン、構造化条件）
 - API候補抽出の精度改善（レスポンス本文の構造推定）
+
+## 変数テンプレート
+
+`run/debug` 実行時に、step内の `url` / `selectorVariants` / `value` / `guards[].value` / `effects[].value` でテンプレート展開が使えます。
+
+- 組み込み:
+  - `{{today}}` (`YYYY-MM-DD`)
+  - `{{today+1d}}`, `{{today-2d}}`
+  - `{{now}}` (ISO8601)
+- 任意変数:
+  - `--var key=value` で渡した値を `{{key}}` で参照
+
+例:
+
+```json
+{
+  "action": "fill",
+  "value": "{{today}}",
+  "guards": [{ "type": "url_is", "value": "https://example.com/{{tenant}}" }]
+}
+```
