@@ -32,8 +32,9 @@ Name tests by behavior (for example, `"promotes API calls to http mode"`).
 Add or update tests for any change in recipe compilation, guard/effect validation, or replay behavior.
 
 ## Commit & Pull Request Guidelines
-Recent history uses short, imperative subjects (examples: `Fix CI by tracking package-lock.json`, `Fix HTTP guard context to use page URL`).  
-Recommended format: `<Scope>: <imperative summary>` or concise `Fix ...` when scope is obvious.  
+Recent history uses short, imperative subjects (examples: `Fix CI by tracking package-lock.json`, `Fix HTTP guard context to use page URL`).
+Recommended format: `<Scope>: <imperative summary>` or concise `Fix ...` when scope is obvious.
+Push する前に必ず `npm run lint && npm run test && npm run build` を実行して CI と同等のチェックをローカルで通すこと。
 PRs should include:
 - What changed and why
 - How to verify (`npm run lint && npm run test && npm run build`)
