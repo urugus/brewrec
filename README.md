@@ -31,6 +31,10 @@
 
 - 記録ログからレシピ（`recipe.json`相当）を生成
 - ローカルLLM（例: `claude -p`）で意図要約を生成可能
+- request/response を解析し、API候補を `http fetch` step に自動昇格
+  - 静的アセットを除外
+  - ドキュメントダウンロードは保持
+  - 重複request URLを除去
 - 各stepに `mode: "http" | "pw"` を付与
 - フォールバック情報（selector再探索・repair許可）を保存
 - 同名recipeは `version` をインクリメント
@@ -40,6 +44,8 @@
 - レシピをLLMなしで実行
 - `http` stepを先に実行、`pw` stepは最小限で実行
 - selector候補を順番に試行
+- stepごとの `guards/effects` を実行時検証
+  - 例: `url_is`, `url_not`, `text_visible`, `url_changed`
 - 失敗時は `repair` で差分更新
 
 ## CLI
@@ -124,14 +130,14 @@ npm run build
 ## 現在のMVP範囲
 
 - Record: click/input/navigation/request/response/console を記録
-- Compile: ヒューリスティック変換 + LLM要約（任意）
-- Run: HTTP先行 + Playwright再生
+- Compile: API候補のHTTP昇格 + LLM要約（任意）
+- Run: HTTP先行 + Playwright再生 + guard/effect検証
 - Repair: selector候補整理とversion更新
 - UI: recipe一覧/JSON編集/保存
 
 ## 今後の拡張候補
 
-- NetworkログからAPI自動抽出し、`pw -> http` 変換率を改善
-- `guards/effects` の実行時検証を強化
 - storageState/cookie jar連携によるログイン再利用
 - 失敗ステップ単位の差分パッチ生成（真の部分再学習）
+- `guards/effects` の表現力拡張（URLパターン、構造化条件）
+- API候補抽出の精度改善（レスポンス本文の構造推定）

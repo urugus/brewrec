@@ -6,6 +6,21 @@ const STATIC_ASSET_RE =
 const STATIC_HOST_RE =
   /^https?:\/\/(?:fonts\.googleapis\.com|fonts\.gstatic\.com|cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net)\//;
 
+type ResponseInfo = {
+  status?: number;
+  contentType?: string;
+};
+
+export type CompileStats = {
+  httpPromoted: number;
+  httpSkipped: number;
+};
+
+export type CompileResult = {
+  steps: RecipeStep[];
+  stats: CompileStats;
+};
+
 export function isStaticAsset(url: string): boolean {
   return STATIC_ASSET_RE.test(url) || STATIC_HOST_RE.test(url);
 }
@@ -14,10 +29,66 @@ export function isDocumentDownload(url: string): boolean {
   return /\.(?:pdf|docx?|xlsx?|csv|zip|tar\.gz)(?:\?|$)/i.test(url);
 }
 
-export function eventToStep(
+function buildResponseMap(events: RecordedEvent[]): Map<string, ResponseInfo> {
+  const map = new Map<string, ResponseInfo>();
+  for (const event of events) {
+    if (event.type !== "response" || !event.responseUrl) continue;
+    map.set(event.responseUrl, {
+      status: event.status,
+      contentType: event.headers?.["content-type"],
+    });
+  }
+  return map;
+}
+
+function getPath(url: string): string {
+  try {
+    return new URL(url).pathname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+export function isApiCandidate(requestEvent: RecordedEvent, response?: ResponseInfo): boolean {
+  if (!requestEvent.requestUrl) return false;
+  const reqUrl = requestEvent.requestUrl;
+
+  if (isStaticAsset(reqUrl) || isDocumentDownload(reqUrl)) return false;
+
+  const path = getPath(reqUrl);
+  const method = (requestEvent.method ?? "GET").toUpperCase();
+  const accept = requestEvent.headers?.accept ?? "";
+  const contentType = (response?.contentType ?? "").toLowerCase();
+
+  let score = 0;
+
+  if (path.includes("/api/") || path.startsWith("/api")) score += 2;
+  if (/^https?:\/\/api\./i.test(reqUrl)) score += 2;
+  if (method !== "GET") score += 1;
+  if (accept.includes("application/json")) score += 1;
+
+  if (
+    contentType.includes("application/json") ||
+    contentType.includes("application/xml") ||
+    contentType.includes("text/csv")
+  ) {
+    score += 2;
+  }
+
+  if (contentType.includes("text/html")) score -= 2;
+  if (path.includes("analytics") || path.includes("tracking") || path.includes("pixel")) score -= 2;
+
+  if (response?.status && response.status >= 400) return false;
+
+  return score >= 2;
+}
+
+function eventToStep(
   event: RecordedEvent,
   index: number,
   navigationUrls: Set<string>,
+  responseMap: Map<string, ResponseInfo>,
+  seenRequestUrls: Set<string>,
 ): RecipeStep | null {
   const id = `step-${index + 1}`;
 
@@ -28,7 +99,7 @@ export function eventToStep(
       mode: "pw",
       action: "goto",
       url: event.url,
-      effects: event.effects,
+      effects: [{ type: "url_changed", value: event.url }],
     };
   }
 
@@ -39,7 +110,7 @@ export function eventToStep(
       mode: "pw",
       action: "click",
       selectorVariants: event.anchors.selectorVariants,
-      guards: event.guards,
+      guards: [{ type: "url_is", value: event.url }],
       effects: event.effects,
     };
   }
@@ -52,7 +123,7 @@ export function eventToStep(
       action: "fill",
       selectorVariants: event.anchors.selectorVariants,
       value: event.value,
-      guards: event.guards,
+      guards: [{ type: "url_is", value: event.url }],
       effects: event.effects,
     };
   }
@@ -60,11 +131,11 @@ export function eventToStep(
   if (event.type === "request" && event.requestUrl?.startsWith("http")) {
     const reqUrl = event.requestUrl;
 
-    // ナビゲーションと同じURLは goto で処理済みなのでスキップ
     if (navigationUrls.has(reqUrl)) return null;
+    if (seenRequestUrls.has(reqUrl)) return null;
 
-    // ドキュメントDLは fetch ステップとして残す
     if (isDocumentDownload(reqUrl)) {
+      seenRequestUrls.add(reqUrl);
       return {
         id,
         title: "Download document",
@@ -74,27 +145,44 @@ export function eventToStep(
       };
     }
 
-    // 静的アセットはスキップ
-    if (isStaticAsset(reqUrl)) return null;
+    const response = responseMap.get(reqUrl);
+    if (!isApiCandidate(event, response)) return null;
 
+    seenRequestUrls.add(reqUrl);
     return {
       id,
       title: "Fetch API",
       mode: "http",
       action: "fetch",
       url: reqUrl,
+      guards: [{ type: "url_is", value: event.url }],
     };
   }
 
   return null;
 }
 
-export function eventsToSteps(events: RecordedEvent[]): RecipeStep[] {
-  const navigationUrls = new Set(
-    events.filter((e) => e.type === "navigation").map((e) => e.url),
-  );
+export function eventsToCompileResult(events: RecordedEvent[]): CompileResult {
+  const navigationUrls = new Set(events.filter((e) => e.type === "navigation").map((e) => e.url));
+  const responseMap = buildResponseMap(events);
+  const seenRequestUrls = new Set<string>();
 
-  return events
-    .map((event, index) => eventToStep(event, index, navigationUrls))
+  const steps = events
+    .map((event, index) => eventToStep(event, index, navigationUrls, responseMap, seenRequestUrls))
     .filter((step): step is RecipeStep => step !== null);
+
+  const httpPromoted = steps.filter((step) => step.mode === "http").length;
+  const allRequestCount = events.filter((event) => event.type === "request").length;
+
+  return {
+    steps,
+    stats: {
+      httpPromoted,
+      httpSkipped: Math.max(allRequestCount - httpPromoted, 0),
+    },
+  };
+}
+
+export function eventsToSteps(events: RecordedEvent[]): RecipeStep[] {
+  return eventsToCompileResult(events).steps;
 }

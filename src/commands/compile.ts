@@ -1,4 +1,4 @@
-import { eventsToSteps } from "../core/compile-heuristic.js";
+import { eventsToCompileResult } from "../core/compile-heuristic.js";
 import { exists, recipePath } from "../core/fs.js";
 import { runLocalClaude } from "../core/llm.js";
 import { loadRecipe, saveRecipe } from "../core/recipe-store.js";
@@ -20,7 +20,7 @@ function buildPrompt(events: RecordedEvent[]): string {
 
 export async function compileCommand(name: string, options: CompileOptions): Promise<void> {
   const events = await readRecordedEvents(name);
-  const steps = eventsToSteps(events);
+  const { steps, stats } = eventsToCompileResult(events);
 
   const llmSummary = await runLocalClaude(buildPrompt(events), options.llmCommand);
   const p = recipePath(name);
@@ -32,6 +32,9 @@ export async function compileCommand(name: string, options: CompileOptions): Pro
   }
 
   const now = new Date().toISOString();
+  const compileSummary = `Compile stats: httpPromoted=${stats.httpPromoted}, httpSkipped=${stats.httpSkipped}`;
+  const notes = llmSummary ? `${llmSummary}\n\n${compileSummary}` : compileSummary;
+
   const recipe: Recipe = {
     schemaVersion: 1,
     id: name,
@@ -46,7 +49,7 @@ export async function compileCommand(name: string, options: CompileOptions): Pro
       selectorVariants: steps.flatMap((s) => s.selectorVariants ?? []).slice(0, 20),
       allowRepair: true,
     },
-    notes: llmSummary || "LLM summary unavailable. Heuristic compile only.",
+    notes,
   };
 
   await saveRecipe(recipe);
