@@ -43,6 +43,8 @@ export type RecordedEvent = {
   requestUrl?: string;
   responseUrl?: string;
   headers?: Record<string, string>;
+  secret?: boolean;
+  secretFieldName?: string;
 };
 
 export type StepMode = "http" | "pw";

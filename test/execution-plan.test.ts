@@ -165,6 +165,50 @@ describe("execution plan", () => {
     expect(plan.unresolvedVars).toContain("tenant");
   });
 
+  it("resolves auto-generated credential secret variables from vault", async () => {
+    const recipe: Recipe = {
+      ...baseRecipe(),
+      steps: [
+        {
+          id: "s1",
+          title: "Fill email",
+          mode: "pw",
+          action: "fill",
+          selectorVariants: ['input[name="email"]'],
+          value: "{{email}}",
+          guards: [{ type: "url_is", value: "https://example.com/login" }],
+        },
+        {
+          id: "s2",
+          title: "Fill password",
+          mode: "pw",
+          action: "fill",
+          selectorVariants: ['input[type="password"]'],
+          value: "{{password}}",
+          guards: [{ type: "url_is", value: "https://example.com/login" }],
+        },
+      ],
+      variables: [
+        { name: "email", required: true, resolver: { type: "secret" } },
+        { name: "password", required: true, resolver: { type: "secret" } },
+      ],
+    };
+
+    const plan = await buildExecutionPlan(recipe, {
+      promptRunner: async () => "",
+      secretLoader: async (_recipeId, varName) => {
+        if (varName === "email") return "user@example.com";
+        if (varName === "password") return "s3cret";
+        return undefined;
+      },
+      secretSaver: async () => {},
+    });
+
+    expect(plan.unresolvedVars).toEqual([]);
+    expect(plan.steps[0].value).toBe("user@example.com");
+    expect(plan.steps[1].value).toBe("s3cret");
+  });
+
   it("validates date variable format", async () => {
     const recipe: Recipe = {
       ...baseRecipe(),

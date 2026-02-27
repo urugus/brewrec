@@ -4,6 +4,7 @@ import { chromium } from "playwright";
 import type { BrowserContext, Page } from "playwright";
 import { recordingSnapshotsDir } from "../core/fs.js";
 import { appendRecordedEvent, initRecording } from "../core/record-store.js";
+import { saveSecret } from "../core/secret-store.js";
 import type { RecordedEvent } from "../types.js";
 
 type RecordOptions = {
@@ -67,6 +68,48 @@ const INIT_SCRIPT_SOURCE = `
     };
   };
 
+  var inferFieldName = function(el) {
+    var ac = el.getAttribute("autocomplete");
+    if (ac && ac !== "off" && ac !== "on") {
+      return ac.replace("current-", "").replace("new-", "");
+    }
+    var name = el.getAttribute("name");
+    if (name) {
+      var match = name.match(/\\[([^\\]]+)\\]$/);
+      if (match) return match[1];
+      return name.replace(/[^a-zA-Z0-9_]/g, "_");
+    }
+    var type = el.type;
+    if (type === "password" || type === "email") return type;
+    if (el.id) return el.id.replace(/[^a-zA-Z0-9_]/g, "_");
+    return "credential";
+  };
+
+  var safeSecretPush = function(payload) {
+    try {
+      if (typeof window.__browrec_secret === "function") {
+        window.__browrec_secret(payload);
+      }
+    } catch (err) {
+      console.error("[browrec] secret push error:", err);
+    }
+  };
+
+  var isCredentialField = function(el) {
+    if (!(el instanceof HTMLInputElement)) return false;
+    if (el.type === "password") return true;
+    var form = el.closest("form");
+    if (!form) return false;
+    if (!form.querySelector('input[type="password"]')) return false;
+    var type = (el.type || "").toLowerCase();
+    var autocomplete = (el.getAttribute("autocomplete") || "").toLowerCase();
+    var name = (el.getAttribute("name") || "").toLowerCase();
+    if (type === "email" || type === "tel") return true;
+    if (autocomplete === "username" || autocomplete === "email") return true;
+    if (name.includes("user") || name.includes("email") || name.includes("login") || name.includes("account")) return true;
+    return false;
+  };
+
   var safePush = function(payload) {
     try {
       if (typeof window.__browrec_push === "function") {
@@ -88,8 +131,21 @@ const INIT_SCRIPT_SOURCE = `
   document.addEventListener("input", function(ev) {
     var target = ev.target;
     if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return;
-    var isSecret = (target instanceof HTMLInputElement && target.type === "password");
-    safePush({ type: "input", anchors: buildAnchors(target), value: isSecret ? "***" : target.value });
+    var isPassword = (target instanceof HTMLInputElement && target.type === "password");
+    var isSecret = isPassword || isCredentialField(target);
+    var fieldName = isSecret ? inferFieldName(target) : undefined;
+
+    safePush({
+      type: "input",
+      anchors: buildAnchors(target),
+      value: isSecret ? "***" : target.value,
+      secret: isSecret || undefined,
+      secretFieldName: fieldName || undefined
+    });
+
+    if (isSecret && fieldName) {
+      safeSecretPush({ fieldName: fieldName, value: target.value });
+    }
   }, { capture: true });
 
   document.addEventListener("keydown", function(ev) {
@@ -98,7 +154,12 @@ const INIT_SCRIPT_SOURCE = `
 })();
 `;
 
-const wireContextEvents = async (name: string, context: BrowserContext): Promise<void> => {
+const wireContextEvents = async (
+  name: string,
+  context: BrowserContext,
+): Promise<{ capturedSecrets: Map<string, string> }> => {
+  const capturedSecrets = new Map<string, string>();
+
   await context.exposeBinding(
     "__browrec_push",
     async ({ page }, payload: Omit<RecordedEvent, "ts" | "url">) => {
@@ -111,7 +172,16 @@ const wireContextEvents = async (name: string, context: BrowserContext): Promise
     },
   );
 
+  await context.exposeBinding(
+    "__browrec_secret",
+    async (_source, payload: { fieldName: string; value: string }) => {
+      capturedSecrets.set(payload.fieldName, payload.value);
+    },
+  );
+
   await context.addInitScript({ content: INIT_SCRIPT_SOURCE });
+
+  return { capturedSecrets };
 };
 
 const wirePageEvents = async (name: string, page: Page): Promise<void> => {
@@ -171,7 +241,7 @@ export const recordCommand = async (name: string, options: RecordOptions): Promi
   const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext();
 
-  await wireContextEvents(name, context);
+  const { capturedSecrets } = await wireContextEvents(name, context);
 
   const page = await context.newPage();
   await wirePageEvents(name, page);
@@ -179,5 +249,10 @@ export const recordCommand = async (name: string, options: RecordOptions): Promi
   await page.goto(options.url, { waitUntil: "domcontentloaded" });
 
   await page.waitForEvent("close", { timeout: 0 });
+
+  for (const [fieldName, value] of capturedSecrets) {
+    await saveSecret(name, fieldName, value);
+  }
+
   await browser.close();
 };
