@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { ARTIFACTS_DIR, RECIPES_DIR, RECORDINGS_DIR, SECRETS_DIR } from "./paths.js";
 
@@ -33,6 +34,17 @@ export const artifactDir = (name: string): string => {
 
 export const vaultPath = (recipeName: string): string => {
   return path.join(SECRETS_DIR, `${recipeName}.vault.json`);
+};
+
+export const resolveDownloadDir = async (
+  recipeName: string,
+  downloadDir?: string,
+): Promise<string> => {
+  const resolved = downloadDir
+    ? downloadDir.replace(/^~/, os.homedir())
+    : path.join(ARTIFACTS_DIR, recipeName, "downloads");
+  await fs.mkdir(resolved, { recursive: true });
+  return resolved;
 };
 
 export const exists = async (filePath: string): Promise<boolean> => {
