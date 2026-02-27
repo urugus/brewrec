@@ -1,7 +1,9 @@
+import path from "node:path";
 import { chromium, request } from "playwright";
 import type { BrowserContext, Page } from "playwright";
 import { eventsToSteps } from "../core/compile-heuristic.js";
 import { buildExecutionPlan } from "../core/execution-plan.js";
+import { resolveDownloadDir } from "../core/fs.js";
 import {
   logGuardSkipped,
   logHealPhase1Failed,
@@ -160,13 +162,26 @@ const executeStep = async (
   return currentUrl ?? page.url();
 };
 
-const runPlaywrightSteps = async (steps: RecipeStep[]): Promise<string | undefined> => {
+const setupDownloadHandler = (page: Page, downloadDir: string): void => {
+  page.on("download", async (download) => {
+    const filename = download.suggestedFilename();
+    const savePath = path.join(downloadDir, filename);
+    await download.saveAs(savePath);
+    process.stderr.write(`  Downloaded: ${savePath}\n`);
+  });
+};
+
+const runPlaywrightSteps = async (
+  steps: RecipeStep[],
+  downloadDir: string,
+): Promise<string | undefined> => {
   if (steps.length === 0) return undefined;
 
   const browser = await chromium.launch({ headless: true });
   try {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ acceptDownloads: true });
     const page = await context.newPage();
+    setupDownloadHandler(page, downloadDir);
     let currentUrl: string | undefined;
 
     for (const step of steps) {
@@ -183,6 +198,7 @@ const runPlaywrightSteps = async (steps: RecipeStep[]): Promise<string | undefin
 const runPlaywrightStepsWithHeal = async (
   steps: RecipeStep[],
   llmCommand: string,
+  downloadDir: string,
 ): Promise<HealRunResult> => {
   const healStats: HealStats = { phase1Healed: 0, phase2ReRecorded: 0 };
   const updatedSteps = [...steps];
@@ -193,7 +209,7 @@ const runPlaywrightStepsWithHeal = async (
 
   const browser = await chromium.launch({ headless: false });
   try {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ acceptDownloads: true });
 
     // Pre-inject recording capabilities for Phase 2
     const healRecordBuffer: RecordedEvent[] = [];
@@ -203,6 +219,7 @@ const runPlaywrightStepsWithHeal = async (
     });
 
     const page = await context.newPage();
+    setupDownloadHandler(page, downloadDir);
     let currentUrl: string | undefined;
 
     for (let i = 0; i < updatedSteps.length; i++) {
@@ -385,11 +402,13 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
 
   const httpSteps = plan.steps.filter((s) => s.mode === "http");
   const pwSteps = plan.steps.filter((s) => s.mode === "pw");
+  const downloadDir = await resolveDownloadDir(name, recipe.downloadDir);
 
   if (options.heal) {
     const { lastUrl, healStats, updatedSteps } = await runPlaywrightStepsWithHeal(
       pwSteps,
       options.llmCommand ?? "claude",
+      downloadDir,
     );
     await runHttpSteps(httpSteps, lastUrl, true);
 
@@ -419,7 +438,7 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
       logHealSummary(healStats.phase1Healed, healStats.phase2ReRecorded);
     }
   } else {
-    const lastPwUrl = await runPlaywrightSteps(pwSteps);
+    const lastPwUrl = await runPlaywrightSteps(pwSteps, downloadDir);
     await runHttpSteps(httpSteps, lastPwUrl);
   }
 

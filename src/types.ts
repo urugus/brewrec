@@ -107,5 +107,6 @@ export type Recipe = {
   steps: RecipeStep[];
   variables?: RecipeVariable[];
   fallback: FallbackPlan;
+  downloadDir?: string;
   notes?: string;
 };
