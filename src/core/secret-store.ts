@@ -110,8 +110,13 @@ export const loadSecret = async (
       const legacy = legacyDeriveKey();
       try {
         const plaintext = decrypt(entry, legacy);
-        vault.entries[variableName] = encrypt(plaintext, key);
-        await writeVault(recipeName, vault);
+        // Re-encrypt with new key (best-effort; return plaintext regardless)
+        try {
+          vault.entries[variableName] = encrypt(plaintext, key);
+          await writeVault(recipeName, vault);
+        } catch {
+          // write failure is non-fatal
+        }
         return plaintext;
       } catch {
         return undefined;

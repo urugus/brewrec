@@ -73,7 +73,7 @@ const linuxBackend: KeychainBackend = {
     try {
       await exec("/bin/sh", [
         "-c",
-        `printf '%s' "${hexKey}" | secret-tool store --label='browrec master key' application ${ACCOUNT_NAME} type ${SERVICE_NAME}`,
+        `printf '%s' '${hexKey}' | secret-tool store --label='browrec master key' application ${ACCOUNT_NAME} type ${SERVICE_NAME}`,
       ]);
       return true;
     } catch {
