@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import { exists, vaultPath } from "./fs.js";
+import { getMasterKey, setMasterKey } from "./keychain.js";
 import { SECRETS_DIR } from "./paths.js";
 
 type VaultEntry = {
@@ -20,10 +21,39 @@ const IV_BYTES = 16;
 const PBKDF2_ITERATIONS = 100_000;
 const KEY_LENGTH = 32;
 
-const deriveKey = (): Buffer => {
-  const material = `${os.hostname()}:${os.userInfo().username}`;
+let cachedMasterKey: Buffer | null | undefined;
+
+const getOrCreateMasterKey = async (): Promise<Buffer | null> => {
+  if (cachedMasterKey !== undefined) return cachedMasterKey;
+
+  let masterKey = await getMasterKey();
+  if (!masterKey) {
+    const newKey = crypto.randomBytes(KEY_LENGTH);
+    const stored = await setMasterKey(newKey);
+    if (stored) {
+      masterKey = newKey;
+    }
+  }
+  cachedMasterKey = masterKey;
+  return masterKey;
+};
+
+const deriveKeyFromMaterial = (material: string): Buffer => {
   const salt = `browrec-vault-v1:${material}`;
   return crypto.pbkdf2Sync(material, salt, PBKDF2_ITERATIONS, KEY_LENGTH, "sha256");
+};
+
+const legacyDeriveKey = (): Buffer => {
+  const material = `${os.hostname()}:${os.userInfo().username}`;
+  return deriveKeyFromMaterial(material);
+};
+
+const deriveKey = async (): Promise<Buffer> => {
+  const masterKey = await getOrCreateMasterKey();
+  if (masterKey) {
+    return deriveKeyFromMaterial(masterKey.toString("hex"));
+  }
+  return legacyDeriveKey();
 };
 
 const encrypt = (plaintext: string, key: Buffer): VaultEntry => {
@@ -70,7 +100,28 @@ export const loadSecret = async (
     const vault = await readVault(recipeName);
     const entry = vault.entries[variableName];
     if (!entry) return undefined;
-    return decrypt(entry, deriveKey());
+
+    const key = await deriveKey();
+
+    try {
+      return decrypt(entry, key);
+    } catch {
+      // Primary key failed — try legacy key for transparent migration
+      const legacy = legacyDeriveKey();
+      try {
+        const plaintext = decrypt(entry, legacy);
+        // Re-encrypt with new key (best-effort; return plaintext regardless)
+        try {
+          vault.entries[variableName] = encrypt(plaintext, key);
+          await writeVault(recipeName, vault);
+        } catch {
+          // write failure is non-fatal
+        }
+        return plaintext;
+      } catch {
+        return undefined;
+      }
+    }
   } catch {
     return undefined;
   }
@@ -82,6 +133,12 @@ export const saveSecret = async (
   plaintext: string,
 ): Promise<void> => {
   const vault = await readVault(recipeName);
-  vault.entries[variableName] = encrypt(plaintext, deriveKey());
+  const key = await deriveKey();
+  vault.entries[variableName] = encrypt(plaintext, key);
   await writeVault(recipeName, vault);
+};
+
+/** @internal — reset cached master key (for tests) */
+export const _resetKeyCache = (): void => {
+  cachedMasterKey = undefined;
 };
