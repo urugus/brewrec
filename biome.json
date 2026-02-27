@@ -1,7 +1,7 @@
 {
   "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
   "files": {
-    "ignore": ["dist/**", "recipes/**", ".claude/**", "recordings/**", "artifacts/**"]
+    "ignore": ["dist/**", "recipes/**", ".claude/**", "recordings/**", "artifacts/**", "secrets/**"]
   },
   "formatter": {
     "enabled": true,
