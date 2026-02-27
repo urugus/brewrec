@@ -10,3 +10,4 @@ export const RECORDINGS_DIR = path.join(projectRoot, "recordings");
 export const RECIPES_DIR = path.join(projectRoot, "recipes");
 export const ARTIFACTS_DIR = path.join(projectRoot, "artifacts");
 export const PUBLIC_DIR = path.join(projectRoot, "public");
+export const SECRETS_DIR = path.join(projectRoot, "secrets");

@@ -5,9 +5,11 @@ dist/
 recordings/*
 artifacts/*
 recipes/*
+secrets/*
 !recordings/.gitkeep
 !artifacts/.gitkeep
 !recipes/.gitkeep
+!secrets/.gitkeep
 
 # OS
 .DS_Store

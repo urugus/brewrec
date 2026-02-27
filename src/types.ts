@@ -79,6 +79,9 @@ export type VariableResolver =
   | {
       type: "prompted";
       promptTemplate: string;
+    }
+  | {
+      type: "secret";
     };
 
 export type RecipeVariable = {

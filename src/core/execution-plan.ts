@@ -1,5 +1,6 @@
 import type { Recipe, RecipeStep, RecipeVariable } from "../types.js";
 import { runLocalClaude } from "./llm.js";
+import { loadSecret, saveSecret } from "./secret-store.js";
 import {
   collectStepTemplateTokens,
   isBuiltinTemplateToken,
@@ -22,6 +23,8 @@ export type BuildExecutionPlanOptions = {
   now?: Date;
   llmCommand?: string;
   promptRunner?: PromptRunner;
+  secretLoader?: SecretLoader;
+  secretSaver?: SecretSaver;
 };
 
 const isDateValue = (value: string): boolean => {
@@ -49,10 +52,19 @@ const pickPromptValue = (output: string): string => {
   return firstNonEmpty ?? "";
 };
 
+type SecretLoader = (recipeName: string, variableName: string) => Promise<string | undefined>;
+type SecretSaver = (recipeName: string, variableName: string, plaintext: string) => Promise<void>;
+
 const resolveVariableBySpec = async (
   variable: RecipeVariable,
   resolvedVars: Record<string, string>,
-  context: { now: Date; llmCommand?: string; promptRunner: PromptRunner },
+  context: {
+    now: Date;
+    recipeId: string;
+    llmCommand?: string;
+    promptRunner: PromptRunner;
+    secretLoader: SecretLoader;
+  },
 ): Promise<string | undefined> => {
   const resolver = variable.resolver;
 
@@ -64,6 +76,10 @@ const resolveVariableBySpec = async (
 
   if (resolver.type === "builtin") {
     return resolveTemplateString(`{{${resolver.expr}}}`, { vars: resolvedVars, now: context.now });
+  }
+
+  if (resolver.type === "secret") {
+    return await context.secretLoader(context.recipeId, variable.name);
   }
 
   const prompt = resolveTemplateString(resolver.promptTemplate, {
@@ -82,6 +98,8 @@ export const buildExecutionPlan = async (
 ): Promise<ExecutionPlan> => {
   const now = options.now ?? new Date();
   const promptRunner = options.promptRunner ?? runLocalClaude;
+  const secretLoaderFn = options.secretLoader ?? loadSecret;
+  const secretSaverFn = options.secretSaver ?? saveSecret;
   const resolvedVars: Record<string, string> = { ...(options.cliVars ?? {}) };
   const warnings: string[] = [];
   const unresolvedVars = new Set<string>();
@@ -94,8 +112,10 @@ export const buildExecutionPlan = async (
 
     const resolved = await resolveVariableBySpec(variable, resolvedVars, {
       now,
+      recipeId: recipe.id,
       llmCommand: options.llmCommand,
       promptRunner,
+      secretLoader: secretLoaderFn,
     });
 
     const finalValue = resolved ?? variable.defaultValue;
@@ -108,6 +128,12 @@ export const buildExecutionPlan = async (
     if (variable.required) {
       unresolvedVars.add(variable.name);
       warnings.push(`Required variable is unresolved: ${variable.name}`);
+    }
+  }
+
+  for (const variable of recipe.variables ?? []) {
+    if (variable.resolver?.type === "secret" && resolvedVars[variable.name] !== undefined) {
+      await secretSaverFn(recipe.id, variable.name, resolvedVars[variable.name]);
     }
   }
 
