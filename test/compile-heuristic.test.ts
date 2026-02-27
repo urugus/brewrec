@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  aggregateInputEvents,
+  deduplicateClicks,
   eventsToCompileResult,
   eventsToSteps,
   isApiCandidate,
   isDocumentDownload,
+  isMonitoringRequest,
   isStaticAsset,
 } from "../src/core/compile-heuristic.js";
 import type { RecordedEvent } from "../src/types.js";
@@ -177,5 +180,249 @@ describe("eventsToSteps", () => {
     expect(steps[1]?.title).toBe("Download document");
     expect(steps[2]?.title).toBe("Fetch API");
     expect(stats.httpPromoted).toBe(2);
+  });
+});
+
+describe("aggregateInputEvents", () => {
+  it("collapses consecutive input events on same element into one", () => {
+    const events: RecordedEvent[] = [
+      {
+        ts: "2026-02-27T00:00:00.000Z",
+        type: "input",
+        url: "https://example.com",
+        value: "a",
+        anchors: { selectorVariants: ['input[name="email"]'] },
+      },
+      {
+        ts: "2026-02-27T00:00:00.100Z",
+        type: "input",
+        url: "https://example.com",
+        value: "ab",
+        anchors: { selectorVariants: ['input[name="email"]'] },
+      },
+      {
+        ts: "2026-02-27T00:00:00.200Z",
+        type: "input",
+        url: "https://example.com",
+        value: "abc",
+        anchors: { selectorVariants: ['input[name="email"]'] },
+      },
+    ];
+
+    const result = aggregateInputEvents(events);
+    expect(result).toHaveLength(1);
+    expect(result[0].value).toBe("abc");
+  });
+
+  it("preserves secret metadata on aggregated event", () => {
+    const events: RecordedEvent[] = [
+      {
+        ts: "2026-02-27T00:00:00.000Z",
+        type: "input",
+        url: "https://example.com",
+        value: "***",
+        secret: true,
+        secretFieldName: "password",
+        anchors: { selectorVariants: ['input[type="password"]'] },
+      },
+      {
+        ts: "2026-02-27T00:00:00.100Z",
+        type: "input",
+        url: "https://example.com",
+        value: "***",
+        secret: true,
+        secretFieldName: "password",
+        anchors: { selectorVariants: ['input[type="password"]'] },
+      },
+    ];
+
+    const result = aggregateInputEvents(events);
+    expect(result).toHaveLength(1);
+    expect(result[0].secret).toBe(true);
+    expect(result[0].secretFieldName).toBe("password");
+  });
+
+  it("skips keypress events between consecutive inputs", () => {
+    const events: RecordedEvent[] = [
+      {
+        ts: "2026-02-27T00:00:00.000Z",
+        type: "input",
+        url: "https://example.com",
+        value: "a",
+        anchors: { selectorVariants: ['input[name="email"]'] },
+      },
+      { ts: "2026-02-27T00:00:00.050Z", type: "keypress", url: "https://example.com", key: "b" },
+      {
+        ts: "2026-02-27T00:00:00.100Z",
+        type: "input",
+        url: "https://example.com",
+        value: "ab",
+        anchors: { selectorVariants: ['input[name="email"]'] },
+      },
+      { ts: "2026-02-27T00:00:00.150Z", type: "keypress", url: "https://example.com", key: "c" },
+      {
+        ts: "2026-02-27T00:00:00.200Z",
+        type: "input",
+        url: "https://example.com",
+        value: "abc",
+        anchors: { selectorVariants: ['input[name="email"]'] },
+      },
+    ];
+
+    const result = aggregateInputEvents(events);
+    const inputs = result.filter((e) => e.type === "input");
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0].value).toBe("abc");
+  });
+
+  it("breaks aggregation on Tab/Enter keypress (focus-changing keys)", () => {
+    const events: RecordedEvent[] = [
+      {
+        ts: "2026-02-27T00:00:00.000Z",
+        type: "input",
+        url: "https://example.com",
+        value: "a",
+        anchors: { selectorVariants: ['input[name="email"]'] },
+      },
+      { ts: "2026-02-27T00:00:00.050Z", type: "keypress", url: "https://example.com", key: "Tab" },
+      {
+        ts: "2026-02-27T00:00:00.100Z",
+        type: "input",
+        url: "https://example.com",
+        value: "b",
+        anchors: { selectorVariants: ['input[name="email"]'] },
+      },
+    ];
+
+    const result = aggregateInputEvents(events);
+    const inputs = result.filter((e) => e.type === "input");
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0].value).toBe("a");
+    expect(inputs[1].value).toBe("b");
+  });
+
+  it("does not merge inputs separated by other events", () => {
+    const events: RecordedEvent[] = [
+      {
+        ts: "2026-02-27T00:00:00.000Z",
+        type: "input",
+        url: "https://example.com",
+        value: "a",
+        anchors: { selectorVariants: ['input[name="email"]'] },
+      },
+      {
+        ts: "2026-02-27T00:00:01.000Z",
+        type: "click",
+        url: "https://example.com",
+        anchors: { selectorVariants: ["button"] },
+      },
+      {
+        ts: "2026-02-27T00:00:02.000Z",
+        type: "input",
+        url: "https://example.com",
+        value: "b",
+        anchors: { selectorVariants: ['input[name="email"]'] },
+      },
+    ];
+
+    const result = aggregateInputEvents(events);
+    expect(result).toHaveLength(3);
+  });
+});
+
+describe("deduplicateClicks", () => {
+  it("collapses consecutive clicks on same element into one", () => {
+    const events: RecordedEvent[] = [
+      {
+        ts: "2026-02-27T00:00:00.000Z",
+        type: "click",
+        url: "https://example.com",
+        anchors: { selectorVariants: ["i.fa.fa-download"] },
+      },
+      {
+        ts: "2026-02-27T00:00:00.100Z",
+        type: "click",
+        url: "https://example.com",
+        anchors: { selectorVariants: ["i.fa.fa-download"] },
+      },
+      {
+        ts: "2026-02-27T00:00:00.200Z",
+        type: "click",
+        url: "https://example.com",
+        anchors: { selectorVariants: ["i.fa.fa-download"] },
+      },
+    ];
+
+    const result = deduplicateClicks(events);
+    expect(result).toHaveLength(1);
+  });
+});
+
+describe("isMonitoringRequest", () => {
+  it("detects DataDog RUM", () => {
+    expect(
+      isMonitoringRequest("https://rum.browser-intake-datadoghq.com/api/v2/rum?ddsource=browser"),
+    ).toBe(true);
+  });
+
+  it("detects Google Analytics", () => {
+    expect(isMonitoringRequest("https://www.google-analytics.com/collect")).toBe(true);
+  });
+
+  it("detects mpc2-prod measurement endpoint", () => {
+    expect(isMonitoringRequest("https://mpc2-prod-24-is5qnl632q-uw.a.run.app/events?cee=no")).toBe(
+      true,
+    );
+  });
+
+  it("does not flag normal API URLs", () => {
+    expect(isMonitoringRequest("https://ssl.wf.jobcan.jp/api/v1/login_user/")).toBe(false);
+  });
+});
+
+describe("monitoring filtering integration", () => {
+  it("excludes monitoring request events from compiled steps", () => {
+    const events: RecordedEvent[] = [
+      {
+        ts: "2026-02-27T00:00:00.000Z",
+        type: "navigation",
+        url: "https://example.com",
+      },
+      {
+        ts: "2026-02-27T00:00:01.000Z",
+        type: "request",
+        url: "https://example.com",
+        requestUrl: "https://www.google-analytics.com/collect",
+        method: "POST",
+      },
+      {
+        ts: "2026-02-27T00:00:01.000Z",
+        type: "request",
+        url: "https://example.com",
+        requestUrl: "https://rum.browser-intake-datadoghq.com/api/v2/rum?ddsource=browser",
+        method: "POST",
+      },
+      {
+        ts: "2026-02-27T00:00:02.000Z",
+        type: "response",
+        url: "https://example.com",
+        responseUrl: "https://example.com/api/v1/data",
+        headers: { "content-type": "application/json" },
+        status: 200,
+      },
+      {
+        ts: "2026-02-27T00:00:02.000Z",
+        type: "request",
+        url: "https://example.com",
+        requestUrl: "https://example.com/api/v1/data",
+        method: "GET",
+        headers: { accept: "application/json" },
+      },
+    ];
+
+    const steps = eventsToSteps(events);
+    const httpSteps = steps.filter((s) => s.mode === "http");
+    expect(httpSteps).toHaveLength(1);
+    expect(httpSteps[0].url).toBe("https://example.com/api/v1/data");
   });
 });

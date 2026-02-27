@@ -6,6 +6,15 @@ const STATIC_ASSET_RE =
 const STATIC_HOST_RE =
   /^https?:\/\/(?:fonts\.googleapis\.com|fonts\.gstatic\.com|cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net)\//;
 
+const MONITORING_HOSTS = [
+  "rum.browser-intake-datadoghq.com",
+  "google-analytics.com",
+  "doubleclick.net",
+  "hotjar.com",
+  "mixpanel.com",
+  "sentry.io",
+];
+
 type ResponseInfo = {
   status?: number;
   contentType?: string;
@@ -49,11 +58,27 @@ const getPath = (url: string): string => {
   }
 };
 
+const getHost = (url: string): string => {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+};
+
+export const isMonitoringRequest = (url: string): boolean => {
+  const host = getHost(url);
+  if (!host) return false;
+  if (host.startsWith("mpc2-prod-")) return true;
+  return MONITORING_HOSTS.some((m) => host === m || host.endsWith(`.${m}`));
+};
+
 export const isApiCandidate = (requestEvent: RecordedEvent, response?: ResponseInfo): boolean => {
   if (!requestEvent.requestUrl) return false;
   const reqUrl = requestEvent.requestUrl;
 
-  if (isStaticAsset(reqUrl) || isDocumentDownload(reqUrl)) return false;
+  if (isStaticAsset(reqUrl) || isDocumentDownload(reqUrl) || isMonitoringRequest(reqUrl))
+    return false;
 
   const path = getPath(reqUrl);
   const method = (requestEvent.method ?? "GET").toUpperCase();
@@ -162,12 +187,79 @@ const eventToStep = (
   return null;
 };
 
+const selectorKey = (event: RecordedEvent): string | undefined => {
+  return event.anchors?.selectorVariants[0];
+};
+
+const FOCUS_CHANGING_KEYS = new Set(["Tab", "Enter", "Escape"]);
+
+const isTransparentEvent = (event: RecordedEvent): boolean => {
+  if (event.type === "console") return true;
+  if (event.type === "keypress") {
+    return !FOCUS_CHANGING_KEYS.has(event.key ?? "");
+  }
+  return false;
+};
+
+export const aggregateInputEvents = (events: RecordedEvent[]): RecordedEvent[] => {
+  const result: RecordedEvent[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const event = events[i];
+    if (event.type !== "input" || !event.anchors) {
+      result.push(event);
+      continue;
+    }
+    const key = selectorKey(event);
+    let last = event;
+    let j = i + 1;
+    while (j < events.length) {
+      if (isTransparentEvent(events[j])) {
+        j++;
+        continue;
+      }
+      if (events[j].type === "input" && selectorKey(events[j]) === key) {
+        last = events[j];
+        j++;
+        continue;
+      }
+      break;
+    }
+    result.push(last);
+    i = j - 1;
+  }
+  return result;
+};
+
+export const deduplicateClicks = (events: RecordedEvent[]): RecordedEvent[] => {
+  const result: RecordedEvent[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const event = events[i];
+    if (event.type !== "click" || !event.anchors) {
+      result.push(event);
+      continue;
+    }
+    result.push(event);
+    const key = selectorKey(event);
+    while (
+      i + 1 < events.length &&
+      events[i + 1].type === "click" &&
+      selectorKey(events[i + 1]) === key
+    ) {
+      i++;
+    }
+  }
+  return result;
+};
+
 export const eventsToCompileResult = (events: RecordedEvent[]): CompileResult => {
-  const navigationUrls = new Set(events.filter((e) => e.type === "navigation").map((e) => e.url));
-  const responseMap = buildResponseMap(events);
+  const preprocessed = deduplicateClicks(aggregateInputEvents(events));
+  const navigationUrls = new Set(
+    preprocessed.filter((e) => e.type === "navigation").map((e) => e.url),
+  );
+  const responseMap = buildResponseMap(preprocessed);
   const seenRequestUrls = new Set<string>();
 
-  const steps = events
+  const steps = preprocessed
     .map((event, index) => eventToStep(event, index, navigationUrls, responseMap, seenRequestUrls))
     .filter((step): step is RecipeStep => step !== null);
 
