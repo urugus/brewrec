@@ -379,3 +379,50 @@ describe("isMonitoringRequest", () => {
     expect(isMonitoringRequest("https://ssl.wf.jobcan.jp/api/v1/login_user/")).toBe(false);
   });
 });
+
+describe("monitoring filtering integration", () => {
+  it("excludes monitoring request events from compiled steps", () => {
+    const events: RecordedEvent[] = [
+      {
+        ts: "2026-02-27T00:00:00.000Z",
+        type: "navigation",
+        url: "https://example.com",
+      },
+      {
+        ts: "2026-02-27T00:00:01.000Z",
+        type: "request",
+        url: "https://example.com",
+        requestUrl: "https://www.google-analytics.com/collect",
+        method: "POST",
+      },
+      {
+        ts: "2026-02-27T00:00:01.000Z",
+        type: "request",
+        url: "https://example.com",
+        requestUrl: "https://rum.browser-intake-datadoghq.com/api/v2/rum?ddsource=browser",
+        method: "POST",
+      },
+      {
+        ts: "2026-02-27T00:00:02.000Z",
+        type: "response",
+        url: "https://example.com",
+        responseUrl: "https://example.com/api/v1/data",
+        headers: { "content-type": "application/json" },
+        status: 200,
+      },
+      {
+        ts: "2026-02-27T00:00:02.000Z",
+        type: "request",
+        url: "https://example.com",
+        requestUrl: "https://example.com/api/v1/data",
+        method: "GET",
+        headers: { accept: "application/json" },
+      },
+    ];
+
+    const steps = eventsToSteps(events);
+    const httpSteps = steps.filter((s) => s.mode === "http");
+    expect(httpSteps).toHaveLength(1);
+    expect(httpSteps[0].url).toBe("https://example.com/api/v1/data");
+  });
+});
