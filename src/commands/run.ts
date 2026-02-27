@@ -303,9 +303,26 @@ const runPlaywrightStepsWithHeal = async (
   }
 };
 
+const canSkipGuardForHttp = (step: RecipeStep, currentUrl: string | undefined): boolean => {
+  if (!currentUrl) return false;
+  for (const guard of step.guards ?? []) {
+    if (guard.type === "url_is") {
+      try {
+        const expected = new URL(guard.value);
+        const actual = new URL(currentUrl);
+        if (expected.hostname === actual.hostname) return true;
+      } catch {
+        // invalid URL
+      }
+    }
+  }
+  return false;
+};
+
 const runHttpSteps = async (
   steps: RecipeStep[],
   currentUrlFromPw?: string,
+  heal?: boolean,
 ): Promise<string | undefined> => {
   if (steps.length === 0) return currentUrlFromPw;
 
@@ -314,7 +331,20 @@ const runHttpSteps = async (
     let lastFetchedUrl = currentUrlFromPw;
 
     for (const step of steps) {
-      await assertGuards(step, { currentUrl: lastFetchedUrl });
+      try {
+        await assertGuards(step, { currentUrl: lastFetchedUrl });
+      } catch {
+        if (heal && canSkipGuardForHttp(step, lastFetchedUrl)) {
+          logGuardSkipped(
+            step.guards?.find((g) => g.type === "url_is")?.value ?? "",
+            lastFetchedUrl ?? "",
+          );
+        } else {
+          throw new Error(
+            `Guard failed: ${step.guards?.map((g) => `${g.type}=${g.value}`).join(", ")} (step=${step.id})`,
+          );
+        }
+      }
 
       if (step.action !== "fetch" || !step.url) continue;
       const response = await context.get(step.url, { timeout: 5000 });
@@ -361,7 +391,7 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
       pwSteps,
       options.llmCommand ?? "claude",
     );
-    await runHttpSteps(httpSteps, lastUrl);
+    await runHttpSteps(httpSteps, lastUrl, true);
 
     // Save healed recipe if any healing occurred
     if (healStats.phase1Healed > 0 || healStats.phase2ReRecorded > 0) {
