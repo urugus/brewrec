@@ -275,6 +275,32 @@ describe("aggregateInputEvents", () => {
     expect(inputs[0].value).toBe("abc");
   });
 
+  it("breaks aggregation on Tab/Enter keypress (focus-changing keys)", () => {
+    const events: RecordedEvent[] = [
+      {
+        ts: "2026-02-27T00:00:00.000Z",
+        type: "input",
+        url: "https://example.com",
+        value: "a",
+        anchors: { selectorVariants: ['input[name="email"]'] },
+      },
+      { ts: "2026-02-27T00:00:00.050Z", type: "keypress", url: "https://example.com", key: "Tab" },
+      {
+        ts: "2026-02-27T00:00:00.100Z",
+        type: "input",
+        url: "https://example.com",
+        value: "b",
+        anchors: { selectorVariants: ['input[name="email"]'] },
+      },
+    ];
+
+    const result = aggregateInputEvents(events);
+    const inputs = result.filter((e) => e.type === "input");
+    expect(inputs).toHaveLength(2);
+    expect(inputs[0].value).toBe("a");
+    expect(inputs[1].value).toBe("b");
+  });
+
   it("does not merge inputs separated by other events", () => {
     const events: RecordedEvent[] = [
       {

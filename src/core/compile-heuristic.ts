@@ -6,8 +6,14 @@ const STATIC_ASSET_RE =
 const STATIC_HOST_RE =
   /^https?:\/\/(?:fonts\.googleapis\.com|fonts\.gstatic\.com|cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net)\//;
 
-const MONITORING_HOST_RE =
-  /^https?:\/\/(?:rum\.browser-intake-datadoghq\.com|.*\.google-analytics\.com|.*\.doubleclick\.net|.*\.hotjar\.com|.*\.mixpanel\.com|.*\.sentry\.io|mpc2-prod-[^/]*)/;
+const MONITORING_HOSTS = [
+  "rum.browser-intake-datadoghq.com",
+  "google-analytics.com",
+  "doubleclick.net",
+  "hotjar.com",
+  "mixpanel.com",
+  "sentry.io",
+];
 
 type ResponseInfo = {
   status?: number;
@@ -52,8 +58,19 @@ const getPath = (url: string): string => {
   }
 };
 
+const getHost = (url: string): string => {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+};
+
 export const isMonitoringRequest = (url: string): boolean => {
-  return MONITORING_HOST_RE.test(url);
+  const host = getHost(url);
+  if (!host) return false;
+  if (host.startsWith("mpc2-prod-")) return true;
+  return MONITORING_HOSTS.some((m) => host === m || host.endsWith(`.${m}`));
 };
 
 export const isApiCandidate = (requestEvent: RecordedEvent, response?: ResponseInfo): boolean => {
@@ -174,8 +191,14 @@ const selectorKey = (event: RecordedEvent): string | undefined => {
   return event.anchors?.selectorVariants[0];
 };
 
+const FOCUS_CHANGING_KEYS = new Set(["Tab", "Enter", "Escape"]);
+
 const isTransparentEvent = (event: RecordedEvent): boolean => {
-  return event.type === "keypress" || event.type === "console";
+  if (event.type === "console") return true;
+  if (event.type === "keypress") {
+    return !FOCUS_CHANGING_KEYS.has(event.key ?? "");
+  }
+  return false;
 };
 
 export const aggregateInputEvents = (events: RecordedEvent[]): RecordedEvent[] => {
