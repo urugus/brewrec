@@ -103,7 +103,7 @@ export type Recipe = {
   version: number;
   createdAt: string;
   updatedAt: string;
-  source: "compiled" | "repaired";
+  source: "compiled" | "repaired" | "healed";
   steps: RecipeStep[];
   variables?: RecipeVariable[];
   fallback: FallbackPlan;
