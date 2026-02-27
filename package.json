@@ -1,6 +1,6 @@
 {
   "name": "browrec",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Record browser actions with LLM-assisted mode and replay fast without LLM",
   "type": "module",
   "main": "dist/index.js",
