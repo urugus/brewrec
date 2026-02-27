@@ -1,12 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { ARTIFACTS_DIR, RECIPES_DIR, RECORDINGS_DIR } from "./paths.js";
+import { ARTIFACTS_DIR, RECIPES_DIR, RECORDINGS_DIR, SECRETS_DIR } from "./paths.js";
 
 export const ensureBaseDirs = async (): Promise<void> => {
   await Promise.all([
     fs.mkdir(RECORDINGS_DIR, { recursive: true }),
     fs.mkdir(RECIPES_DIR, { recursive: true }),
     fs.mkdir(ARTIFACTS_DIR, { recursive: true }),
+    fs.mkdir(SECRETS_DIR, { recursive: true }),
   ]);
 };
 
@@ -28,6 +29,10 @@ export const recipePath = (name: string): string => {
 
 export const artifactDir = (name: string): string => {
   return path.join(ARTIFACTS_DIR, name);
+};
+
+export const vaultPath = (recipeName: string): string => {
+  return path.join(SECRETS_DIR, `${recipeName}.vault.json`);
 };
 
 export const exists = async (filePath: string): Promise<boolean> => {

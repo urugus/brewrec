@@ -97,6 +97,74 @@ describe("execution plan", () => {
     expect(plan.unresolvedVars).toEqual(["searchKeyword", "targetDate"]);
   });
 
+  it("resolves secret variable from vault", async () => {
+    const recipe: Recipe = {
+      ...baseRecipe(),
+      variables: [
+        { name: "tenant", required: true, resolver: { type: "secret" } },
+        { name: "targetDate", resolver: { type: "builtin", expr: "today" } },
+        { name: "searchKeyword", defaultValue: "default" },
+      ],
+    };
+
+    const plan = await buildExecutionPlan(recipe, {
+      now: new Date("2026-02-26T08:00:00.000Z"),
+      promptRunner: async () => "",
+      secretLoader: async (_recipeId, varName) => {
+        if (varName === "tenant") return "vault-tenant";
+        return undefined;
+      },
+      secretSaver: async () => {},
+    });
+
+    expect(plan.resolvedVars.tenant).toBe("vault-tenant");
+    expect(plan.unresolvedVars).toEqual([]);
+  });
+
+  it("auto-saves cli var to vault for secret-typed variable", async () => {
+    const saved: Array<{ recipeId: string; varName: string; value: string }> = [];
+    const recipe: Recipe = {
+      ...baseRecipe(),
+      variables: [
+        { name: "tenant", required: true, resolver: { type: "secret" } },
+        { name: "targetDate", resolver: { type: "builtin", expr: "today" } },
+        { name: "searchKeyword", defaultValue: "default" },
+      ],
+    };
+
+    await buildExecutionPlan(recipe, {
+      now: new Date("2026-02-26T08:00:00.000Z"),
+      cliVars: { tenant: "cli-tenant" },
+      promptRunner: async () => "",
+      secretLoader: async () => undefined,
+      secretSaver: async (recipeId, varName, value) => {
+        saved.push({ recipeId, varName, value });
+      },
+    });
+
+    expect(saved).toEqual([{ recipeId: "sample", varName: "tenant", value: "cli-tenant" }]);
+  });
+
+  it("reports unresolved when vault has no value and no cli var", async () => {
+    const recipe: Recipe = {
+      ...baseRecipe(),
+      variables: [
+        { name: "tenant", required: true, resolver: { type: "secret" } },
+        { name: "targetDate", resolver: { type: "builtin", expr: "today" } },
+        { name: "searchKeyword", defaultValue: "default" },
+      ],
+    };
+
+    const plan = await buildExecutionPlan(recipe, {
+      now: new Date("2026-02-26T08:00:00.000Z"),
+      promptRunner: async () => "",
+      secretLoader: async () => undefined,
+      secretSaver: async () => {},
+    });
+
+    expect(plan.unresolvedVars).toContain("tenant");
+  });
+
   it("validates date variable format", async () => {
     const recipe: Recipe = {
       ...baseRecipe(),
