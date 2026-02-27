@@ -1,4 +1,5 @@
 import { eventsToCompileResult } from "../core/compile-heuristic.js";
+import { applyCredentialVariables } from "../core/credential-vars.js";
 import { exists, recipePath } from "../core/fs.js";
 import { runLocalClaude } from "../core/llm.js";
 import { loadRecipe, saveRecipe } from "../core/recipe-store.js";
@@ -20,7 +21,8 @@ const buildPrompt = (events: RecordedEvent[]): string => {
 
 export const compileCommand = async (name: string, options: CompileOptions): Promise<void> => {
   const events = await readRecordedEvents(name);
-  const { steps, stats } = eventsToCompileResult(events);
+  const { steps: rawSteps, stats } = eventsToCompileResult(events);
+  const { steps, variables: secretVars } = applyCredentialVariables(rawSteps, events);
 
   const llmSummary = await runLocalClaude(buildPrompt(events), options.llmCommand);
   const p = recipePath(name);
@@ -44,6 +46,7 @@ export const compileCommand = async (name: string, options: CompileOptions): Pro
     updatedAt: now,
     source: "compiled",
     steps,
+    variables: secretVars.length > 0 ? secretVars : undefined,
     fallback: {
       selectorReSearch: true,
       selectorVariants: steps.flatMap((s) => s.selectorVariants ?? []).slice(0, 20),
