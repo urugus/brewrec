@@ -25,7 +25,7 @@ export const extractHintsFromSelector = (selector: string): SelectorHints => {
   const nameMatch = selector.match(/\[name="([^"]+)"\]/);
   if (nameMatch) hints.name = nameMatch[1];
 
-  const idMatch = selector.match(/#([\w-]+)/);
+  const idMatch = selector.match(/#([\w:-]+)/);
   if (idMatch) hints.id = idMatch[1];
 
   const roleMatch = selector.match(/role="([^"]+)"/);
@@ -50,6 +50,10 @@ const collectHints = (selectors: string[]): SelectorHints => {
   return merged;
 };
 
+const escapeCssValue = (value: string): string => {
+  return value.replace(/["\\]/g, "\\$&");
+};
+
 const isLocatable = async (page: Page, selector: string): Promise<boolean> => {
   try {
     const count = await page.locator(selector).count();
@@ -71,19 +75,19 @@ const tryHeuristicHeal = async (
   }
   if (hints.placeholder) {
     candidates.push({
-      selector: `[placeholder="${hints.placeholder}"]`,
+      selector: `[placeholder="${escapeCssValue(hints.placeholder)}"]`,
       strategy: "placeholder-exact",
     });
     const firstWord = hints.placeholder.split(" ")[0];
     if (firstWord && firstWord.length >= 3) {
       candidates.push({
-        selector: `[placeholder*="${firstWord}"]`,
+        selector: `[placeholder*="${escapeCssValue(firstWord)}"]`,
         strategy: "placeholder-partial",
       });
     }
   }
   if (hints.name) {
-    candidates.push({ selector: `[name="${hints.name}"]`, strategy: "name-attr" });
+    candidates.push({ selector: `[name="${escapeCssValue(hints.name)}"]`, strategy: "name-attr" });
   }
   if (hints.text && step.action === "click") {
     candidates.push({ selector: `text="${hints.text}"`, strategy: "text-content" });
@@ -103,11 +107,11 @@ const truncateHtml = (html: string, maxLength = 30000): string => {
   return `${html.slice(0, maxLength)}\n<!-- ... truncated ... -->`;
 };
 
-const parseSelectorsFromLlmResponse = (response: string): string[] => {
+export const parseSelectorsFromLlmResponse = (response: string): string[] => {
   const selectors: string[] = [];
   const lines = response.split("\n");
   for (const line of lines) {
-    const trimmed = line.replace(/^[\d.\-*)\s]+/, "").trim();
+    const trimmed = line.replace(/^(?:\d+[.)]\s*|-\s+|\*\s+)/, "").trim();
     if (!trimmed) continue;
 
     const backtickMatch = trimmed.match(/`([^`]+)`/);
@@ -116,7 +120,7 @@ const parseSelectorsFromLlmResponse = (response: string): string[] => {
       continue;
     }
 
-    if (/^[a-z#.\[:\w]/.test(trimmed) && !trimmed.includes(" ") && trimmed.length < 200) {
+    if (/^[a-zA-Z#.\[:\w]/.test(trimmed) && !trimmed.includes(" ") && trimmed.length < 200) {
       selectors.push(trimmed);
     }
   }

@@ -19,10 +19,6 @@ export const logHealPhase1Start = (): void => {
   write("    -> [自動修復] 代替セレクタを検索中...\n");
 };
 
-export const logHealPhase1Llm = (): void => {
-  write("    -> [自動修復] Claudeに問い合わせ中...\n");
-};
-
 export const logHealPhase1Success = (strategy: string, selector: string): void => {
   write(`    -> [自動修復] 成功！ (${strategy})\n`);
   write(`      新セレクタ: ${selector}\n`);

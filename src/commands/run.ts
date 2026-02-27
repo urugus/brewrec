@@ -40,7 +40,13 @@ type HealStats = {
 type HealRunResult = {
   lastUrl: string | undefined;
   healStats: HealStats;
-  updatedSteps: RecipeStep[];
+  /** Phase 1: stepId → new selectors to prepend (from healer, no resolved template values) */
+  selectorPatches: Map<string, string[]>;
+  /** Phase 2: tracks which step triggered re-record and the newly generated steps */
+  phase2Replacement: {
+    replacedFromStepId: string;
+    newSteps: RecipeStep[];
+  } | null;
 };
 
 const tryClick = async (page: Page, selectors: string[]): Promise<void> => {
@@ -84,7 +90,9 @@ const tryGuardWithHeal = async (
           return true;
         }
       } catch {
-        // invalid URL, skip healing
+        process.stderr.write(
+          `    -> [Guard修復] URLパース失敗: guard=${guard.value}, current=${currentUrl}\n`,
+        );
       }
       return false;
     }
@@ -103,13 +111,13 @@ const tryGuardWithHeal = async (
 
 const waitForEnter = (): Promise<void> => {
   return new Promise((resolve) => {
+    const wasRaw = process.stdin.isRaw ?? false;
     const onData = () => {
       process.stdin.removeListener("data", onData);
-      if (wasRaw) process.stdin.setRawMode(false);
+      if (process.stdin.isTTY) process.stdin.setRawMode(wasRaw);
       process.stdin.pause();
       resolve();
     };
-    const wasRaw = process.stdin.isRaw ?? false;
     if (process.stdin.isTTY) process.stdin.setRawMode(false);
     process.stdin.resume();
     process.stdin.on("data", onData);
@@ -201,10 +209,12 @@ const runPlaywrightStepsWithHeal = async (
   downloadDir: string,
 ): Promise<HealRunResult> => {
   const healStats: HealStats = { phase1Healed: 0, phase2ReRecorded: 0 };
-  const updatedSteps = [...steps];
+  const selectorPatches = new Map<string, string[]>();
+  let phase2Replacement: HealRunResult["phase2Replacement"] = null;
+  const runnableSteps = [...steps];
 
   if (steps.length === 0) {
-    return { lastUrl: undefined, healStats, updatedSteps };
+    return { lastUrl: undefined, healStats, selectorPatches, phase2Replacement };
   }
 
   const browser = await chromium.launch({ headless: false });
@@ -222,8 +232,8 @@ const runPlaywrightStepsWithHeal = async (
     setupDownloadHandler(page, downloadDir);
     let currentUrl: string | undefined;
 
-    for (let i = 0; i < updatedSteps.length; i++) {
-      const step = updatedSteps[i];
+    for (let i = 0; i < runnableSteps.length; i++) {
+      const step = runnableSteps[i];
       logStepStart(step.id, step.title);
 
       try {
@@ -232,12 +242,15 @@ const runPlaywrightStepsWithHeal = async (
         logStepOk();
       } catch (err) {
         const errorMsg = (err as Error).message;
-        logStepFailed(errorMsg);
 
         // Guard failure: try domain-match heal
         if (errorMsg.startsWith("Guard failed:")) {
           const healed = await tryGuardWithHeal(step, currentUrl ?? page.url(), page);
           if (healed) {
+            logGuardSkipped(
+              step.guards?.find((g) => g.type === "url_is")?.value ?? "",
+              currentUrl ?? page.url(),
+            );
             try {
               currentUrl = await executeStep(page, step, currentUrl);
               logStepOk();
@@ -247,6 +260,8 @@ const runPlaywrightStepsWithHeal = async (
             }
           }
         }
+
+        logStepFailed(errorMsg);
 
         // Phase 1: selector auto-heal (heuristic + Claude LLM)
         if (step.action === "click" || step.action === "fill") {
@@ -261,8 +276,10 @@ const runPlaywrightStepsWithHeal = async (
             };
             try {
               currentUrl = await executeStep(page, patchedStep, currentUrl);
-              updatedSteps[i] = patchedStep;
+              runnableSteps[i] = patchedStep;
+              selectorPatches.set(step.id, healResult.newSelectors);
               healStats.phase1Healed++;
+              logStepOk();
               continue;
             } catch {
               // healed selector found element but action still failed
@@ -287,7 +304,11 @@ const runPlaywrightStepsWithHeal = async (
 
         // Convert recorded events to steps
         const userEvents = healRecordBuffer.filter(
-          (e) => e.type === "click" || e.type === "input" || e.type === "navigation",
+          (e) =>
+            e.type === "click" ||
+            e.type === "input" ||
+            e.type === "navigation" ||
+            e.type === "keypress",
         );
         const newSteps = eventsToSteps(userEvents);
         const reNumberedSteps = newSteps.map((s, idx) => ({
@@ -297,24 +318,31 @@ const runPlaywrightStepsWithHeal = async (
 
         logHealPhase2Success(reNumberedSteps.length);
 
-        // Replace the failed step and all remaining steps with the new recording
-        updatedSteps.splice(i, updatedSteps.length - i, ...reNumberedSteps);
+        // Track replacement for recipe save (uses original step IDs, no resolved values)
+        phase2Replacement = {
+          replacedFromStepId: step.id,
+          newSteps: reNumberedSteps,
+        };
         healStats.phase2ReRecorded++;
 
         // Execute the newly recorded steps
-        for (let j = i; j < updatedSteps.length; j++) {
-          const newStep = updatedSteps[j];
+        for (const newStep of reNumberedSteps) {
           logStepStart(newStep.id, newStep.title);
-          await assertGuards(newStep, { currentUrl: currentUrl ?? page.url(), page });
-          currentUrl = await executeStep(page, newStep, currentUrl);
-          logStepOk();
+          try {
+            await assertGuards(newStep, { currentUrl: currentUrl ?? page.url(), page });
+            currentUrl = await executeStep(page, newStep, currentUrl);
+            logStepOk();
+          } catch (reErr) {
+            logStepFailed((reErr as Error).message);
+            throw new Error(`Re-recorded step ${newStep.id} failed: ${(reErr as Error).message}`);
+          }
         }
 
         break; // All remaining steps were re-recorded and executed
       }
     }
 
-    return { lastUrl: currentUrl ?? page.url(), healStats, updatedSteps };
+    return { lastUrl: currentUrl ?? page.url(), healStats, selectorPatches, phase2Replacement };
   } finally {
     await browser.close();
   }
@@ -405,22 +433,30 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
   const downloadDir = await resolveDownloadDir(name, recipe.downloadDir);
 
   if (options.heal) {
-    const { lastUrl, healStats, updatedSteps } = await runPlaywrightStepsWithHeal(
+    const result = await runPlaywrightStepsWithHeal(
       pwSteps,
       options.llmCommand ?? "claude",
       downloadDir,
     );
-    await runHttpSteps(httpSteps, lastUrl, true);
+    await runHttpSteps(httpSteps, result.lastUrl, true);
 
     // Save healed recipe if any healing occurred
+    const { healStats, selectorPatches, phase2Replacement } = result;
     if (healStats.phase1Healed > 0 || healStats.phase2ReRecorded > 0) {
-      const updatedMap = new Map(updatedSteps.map((s) => [s.id, s]));
-      const mergedSteps = recipe.steps.map((s) => updatedMap.get(s.id) ?? s);
+      // Build merged steps from original recipe (template placeholders intact, no resolved secrets)
+      let mergedSteps = recipe.steps.map((s) => {
+        const newSelectors = selectorPatches.get(s.id);
+        if (newSelectors) {
+          return { ...s, selectorVariants: [...newSelectors, ...(s.selectorVariants ?? [])] };
+        }
+        return s;
+      });
 
-      // Append any new steps from Phase 2 that don't exist in original
-      for (const s of updatedSteps) {
-        if (!recipe.steps.some((orig) => orig.id === s.id)) {
-          mergedSteps.push(s);
+      // Phase 2: replace from the failed step onward with newly recorded steps
+      if (phase2Replacement) {
+        const idx = mergedSteps.findIndex((s) => s.id === phase2Replacement.replacedFromStepId);
+        if (idx >= 0) {
+          mergedSteps = [...mergedSteps.slice(0, idx), ...phase2Replacement.newSteps];
         }
       }
 
