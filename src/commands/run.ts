@@ -256,15 +256,15 @@ const MAX_UNIQUE_PATH_ATTEMPTS = 1000;
 
 const ensureUniquePath = async (targetPath: string): Promise<string> => {
   const parsed = path.parse(targetPath);
-  let candidate = targetPath;
-  for (let count = 1; count <= MAX_UNIQUE_PATH_ATTEMPTS; count++) {
+  for (let count = 0; count <= MAX_UNIQUE_PATH_ATTEMPTS; count++) {
+    const candidate =
+      count === 0 ? targetPath : path.join(parsed.dir, `${parsed.name}-${count}${parsed.ext}`);
     try {
       const handle = await fs.open(candidate, "wx");
       await handle.close();
       return candidate;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") return candidate;
-      candidate = path.join(parsed.dir, `${parsed.name}-${count}${parsed.ext}`);
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }
   }
   throw new Error(
