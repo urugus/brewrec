@@ -1,9 +1,8 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium, request } from "playwright";
 import type { APIRequestContext, BrowserContext, Page } from "playwright";
-
-type RuntimeStorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
-import { eventsToSteps } from "../core/compile-heuristic.js";
+import { eventsToSteps, isDocumentDownload } from "../core/compile-heuristic.js";
 import { buildExecutionPlan } from "../core/execution-plan.js";
 import { resolveDownloadDir } from "../core/fs.js";
 import {
@@ -45,10 +44,27 @@ type HealRunResult = {
   /** Phase 1: stepId -> new selectors to prepend (from healer, no resolved template values) */
   selectorPatches: Map<string, string[]>;
   /** Phase 2: tracks which step triggered re-record and the newly generated steps */
-  phase2Replacement: {
+  phase2Replacements: Array<{
     replacedFromStepId: string;
     newSteps: RecipeStep[];
-  } | null;
+  }>;
+};
+
+export const applyPhase2Replacements = (
+  baseSteps: RecipeStep[],
+  replacements: HealRunResult["phase2Replacements"],
+): RecipeStep[] => {
+  let mergedSteps = [...baseSteps];
+  for (const replacement of replacements) {
+    const idx = mergedSteps.findIndex((s) => s.id === replacement.replacedFromStepId);
+    if (idx < 0) continue;
+    mergedSteps = [
+      ...mergedSteps.slice(0, idx),
+      ...replacement.newSteps,
+      ...mergedSteps.slice(idx + 1),
+    ];
+  }
+  return mergedSteps;
 };
 
 const tryClick = async (page: Page, selectors: string[]): Promise<void> => {
@@ -77,21 +93,34 @@ const tryFill = async (page: Page, selectors: string[], value: string): Promise<
   throw new Error(`Fill failed for selectors: ${selectors.join(", ")}`);
 };
 
+const matchesUrl = (pattern: string, currentUrl: string): boolean => {
+  if (pattern.endsWith("*")) return currentUrl.startsWith(pattern.slice(0, -1));
+  return currentUrl === pattern;
+};
+
 const tryGuardWithHeal = async (
   step: RecipeStep,
   currentUrl: string,
   page: Page,
 ): Promise<boolean> => {
-  for (const guard of step.guards ?? []) {
+  const guards = step.guards ?? [];
+  if (guards.length === 0) return false;
+
+  for (const guard of guards) {
     if (guard.type === "url_is") {
+      if (matchesUrl(guard.value, currentUrl)) continue;
+      const expectedHostname = extractHostnameForGuardUrl(guard.value);
+      let actualHostname: string | undefined;
       try {
-        const expected = new URL(guard.value);
-        const actual = new URL(currentUrl);
-        if (expected.hostname === actual.hostname) {
-          logGuardSkipped(guard.value, currentUrl);
-          return true;
-        }
+        actualHostname = new URL(currentUrl).hostname;
       } catch {
+        // ignore; handled below
+      }
+      if (expectedHostname && actualHostname && expectedHostname === actualHostname) {
+        logGuardSkipped(guard.value, currentUrl);
+        continue;
+      }
+      if (!expectedHostname) {
         process.stderr.write(
           `    -> [Guard修復] URLパース失敗: guard=${guard.value}, current=${currentUrl}\n`,
         );
@@ -99,16 +128,21 @@ const tryGuardWithHeal = async (
       return false;
     }
 
+    if (guard.type === "url_not") {
+      if (matchesUrl(guard.value, currentUrl)) return false;
+      continue;
+    }
+
     if (guard.type === "text_visible") {
       try {
         await page.getByText(guard.value).first().waitFor({ timeout: 5000 });
-        return true;
       } catch {
         return false;
       }
     }
   }
-  return false;
+
+  return true;
 };
 
 const waitForEnter = (): Promise<void> => {
@@ -183,6 +217,103 @@ const executeStep = async (
   return currentUrl ?? page.url();
 };
 
+const parseContentDispositionFilename = (contentDisposition?: string): string | undefined => {
+  if (!contentDisposition) return undefined;
+  const filenameStar = contentDisposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (filenameStar?.[1]) {
+    try {
+      return decodeURIComponent(filenameStar[1].trim().replace(/^"(.*)"$/, "$1"));
+    } catch {
+      // fallback to other patterns
+    }
+  }
+
+  const filenameQuoted = contentDisposition.match(/filename\s*=\s*"([^"]+)"/i);
+  if (filenameQuoted?.[1]) return filenameQuoted[1];
+
+  const filenameBare = contentDisposition.match(/filename\s*=\s*([^;]+)/i);
+  if (filenameBare?.[1]) return filenameBare[1].trim();
+
+  return undefined;
+};
+
+const sanitizeFilename = (filename: string): string => {
+  const sanitized = filename.replace(/[/\\?%*:|"<>]/g, "_").trim();
+  return sanitized.length > 0 ? sanitized : "download";
+};
+
+const extensionFromContentType = (contentType?: string): string => {
+  const normalized = (contentType ?? "").toLowerCase();
+  if (normalized.includes("application/pdf")) return ".pdf";
+  if (normalized.includes("text/csv")) return ".csv";
+  if (
+    normalized.includes("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") ||
+    normalized.includes("application/vnd.ms-excel")
+  ) {
+    return ".xlsx";
+  }
+  if (
+    normalized.includes(
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ) ||
+    normalized.includes("application/msword")
+  ) {
+    return ".docx";
+  }
+  if (normalized.includes("application/zip")) return ".zip";
+  return "";
+};
+
+const ensureUniquePath = async (targetPath: string): Promise<string> => {
+  const parsed = path.parse(targetPath);
+  let candidate = targetPath;
+  let count = 1;
+  while (true) {
+    try {
+      await fs.access(candidate);
+      candidate = path.join(parsed.dir, `${parsed.name}-${count}${parsed.ext}`);
+      count += 1;
+    } catch {
+      return candidate;
+    }
+  }
+};
+
+const saveHttpDownloadIfNeeded = async (
+  step: RecipeStep,
+  response: Awaited<ReturnType<APIRequestContext["fetch"]>>,
+  downloadDir: string,
+): Promise<void> => {
+  const responseUrl = response.url();
+  const headers = response.headers();
+  const contentDisposition = headers["content-disposition"];
+  const shouldSave =
+    step.download === true ||
+    Boolean(contentDisposition?.toLowerCase().includes("attachment")) ||
+    isDocumentDownload(responseUrl);
+
+  if (!shouldSave) return;
+
+  const headerFilename = parseContentDispositionFilename(contentDisposition);
+  const urlBasename = (() => {
+    try {
+      const pathname = new URL(responseUrl).pathname;
+      const base = path.basename(pathname);
+      return base && base !== "/" ? base : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+
+  const extension = extensionFromContentType(headers["content-type"]);
+  const fallbackName = `${step.id}${extension}`;
+  const filename = sanitizeFilename(headerFilename ?? urlBasename ?? fallbackName);
+  const finalPath = await ensureUniquePath(path.join(downloadDir, filename));
+  const body = await response.body();
+  await fs.writeFile(finalPath, body);
+  process.stderr.write(`  Downloaded: ${finalPath}\n`);
+};
+
 const setupDownloadHandler = (page: Page, downloadDir: string): void => {
   page.on("download", async (download) => {
     const filename = download.suggestedFilename();
@@ -192,20 +323,45 @@ const setupDownloadHandler = (page: Page, downloadDir: string): void => {
   });
 };
 
+const extractHostnameForGuardUrl = (guardValue: string): string | undefined => {
+  const normalized = guardValue.replace(/\*+$/, "");
+  try {
+    return new URL(normalized).hostname;
+  } catch {
+    return undefined;
+  }
+};
+
 const canSkipGuardForHttp = (step: RecipeStep, currentUrl: string | undefined): boolean => {
   if (!currentUrl) return false;
+  let actualHostname: string | undefined;
+  try {
+    actualHostname = new URL(currentUrl).hostname;
+  } catch {
+    return false;
+  }
+
   for (const guard of step.guards ?? []) {
     if (guard.type === "url_is") {
-      try {
-        const expected = new URL(guard.value);
-        const actual = new URL(currentUrl);
-        if (expected.hostname === actual.hostname) return true;
-      } catch {
-        // invalid URL
-      }
+      const expectedHostname = extractHostnameForGuardUrl(guard.value);
+      if (expectedHostname && expectedHostname === actualHostname) return true;
     }
   }
   return false;
+};
+
+const syncHttpCookiesToBrowserContext = async (
+  context: BrowserContext | null,
+  httpContext: APIRequestContext | undefined,
+): Promise<void> => {
+  if (!context || !httpContext) return;
+  try {
+    const state = await httpContext.storageState();
+    if (!state.cookies || state.cookies.length === 0) return;
+    await context.addCookies(state.cookies);
+  } catch {
+    // best-effort only
+  }
 };
 
 const runHttpStep = async (
@@ -213,6 +369,7 @@ const runHttpStep = async (
   step: RecipeStep,
   guardUrl: string | undefined,
   beforeUrl: string | undefined,
+  downloadDir: string,
   heal?: boolean,
 ): Promise<string | undefined> => {
   try {
@@ -229,8 +386,15 @@ const runHttpStep = async (
 
   if (step.action !== "fetch" || !step.url) return beforeUrl;
 
-  const response = await context.get(step.url, { timeout: 5000 });
+  const method = (step.method ?? "GET").toUpperCase();
+  const response = await context.fetch(step.url, {
+    method,
+    headers: step.headers,
+    data: step.body,
+    timeout: 5000,
+  });
   const responseUrl = response.url();
+  await saveHttpDownloadIfNeeded(step, response, downloadDir);
   await assertEffects(step, { beforeUrl, currentUrl: responseUrl });
   return responseUrl;
 };
@@ -255,10 +419,6 @@ const executePwStepWithHeal = async (
     if (errorMsg.startsWith("Guard failed:")) {
       const healed = await tryGuardWithHeal(step, currentUrl ?? page.url(), page);
       if (healed) {
-        logGuardSkipped(
-          step.guards?.find((g) => g.type === "url_is")?.value ?? "",
-          currentUrl ?? page.url(),
-        );
         const newUrl = await executeStep(page, step, currentUrl);
         return { currentUrl: newUrl, healed: false };
       }
@@ -308,6 +468,7 @@ const runPlanSteps = async (
           throw new Error(`Playwright page is not available for step ${step.id}`);
         }
         if (httpContext) {
+          await syncHttpCookiesToBrowserContext(pwContext, httpContext);
           await httpContext.dispose();
           httpContext = undefined;
         }
@@ -326,7 +487,13 @@ const runPlanSteps = async (
           maybeStorage ? { storageState: maybeStorage } : undefined,
         );
       }
-      httpUrl = await runHttpStep(httpContext, step, pageUrl ?? httpUrl, httpUrl ?? pageUrl);
+      httpUrl = await runHttpStep(
+        httpContext,
+        step,
+        pageUrl ?? httpUrl,
+        httpUrl ?? pageUrl,
+        downloadDir,
+      );
       previousStepMode = "http";
     }
 
@@ -348,7 +515,7 @@ const runPlanStepsWithHeal = async (
 ): Promise<HealRunResult> => {
   const healStats: HealStats = { phase1Healed: 0, phase2ReRecorded: 0 };
   const selectorPatches = new Map<string, string[]>();
-  let phase2Replacement: HealRunResult["phase2Replacement"] = null;
+  const phase2Replacements: HealRunResult["phase2Replacements"] = [];
 
   const hasPwStep = steps.some((step) => step.mode === "pw");
   const browser = hasPwStep ? await chromium.launch({ headless: false }) : null;
@@ -372,7 +539,8 @@ const runPlanStepsWithHeal = async (
     let httpUrl: string | undefined;
     let previousStepMode: RecipeStep["mode"] | undefined;
 
-    for (const step of steps) {
+    for (let index = 0; index < steps.length; index++) {
+      const step = steps[index];
       logStepStart(step.id, step.title);
 
       if (step.mode === "http") {
@@ -391,6 +559,7 @@ const runPlanStepsWithHeal = async (
             step,
             pageUrl ?? httpUrl,
             httpUrl ?? pageUrl,
+            downloadDir,
             true,
           );
           previousStepMode = "http";
@@ -410,6 +579,7 @@ const runPlanStepsWithHeal = async (
 
       try {
         if (httpContext) {
+          await syncHttpCookiesToBrowserContext(context, httpContext);
           await httpContext.dispose();
           httpContext = undefined;
         }
@@ -454,10 +624,10 @@ const runPlanStepsWithHeal = async (
 
         logHealPhase2Success(reNumberedSteps.length);
 
-        phase2Replacement = {
+        phase2Replacements.push({
           replacedFromStepId: step.id,
           newSteps: reNumberedSteps,
-        };
+        });
         healStats.phase2ReRecorded++;
 
         for (const newStep of reNumberedSteps) {
@@ -478,14 +648,17 @@ const runPlanStepsWithHeal = async (
                 newStep,
                 pageUrl ?? httpUrl,
                 httpUrl ?? pageUrl,
+                downloadDir,
                 true,
               );
               previousStepMode = "http";
             } else {
               if (httpContext) {
+                await syncHttpCookiesToBrowserContext(context, httpContext);
                 await httpContext.dispose();
                 httpContext = undefined;
               }
+              await assertGuards(newStep, { currentUrl: pageUrl ?? page.url(), page });
               pageUrl = await executeStep(page, newStep, pageUrl);
               previousStepMode = "pw";
             }
@@ -495,8 +668,6 @@ const runPlanStepsWithHeal = async (
             throw new Error(`Re-recorded step ${newStep.id} failed: ${(reErr as Error).message}`);
           }
         }
-
-        break;
       }
     }
 
@@ -504,7 +675,7 @@ const runPlanStepsWithHeal = async (
       lastUrl: pageUrl ?? httpUrl ?? page?.url(),
       healStats,
       selectorPatches,
-      phase2Replacement,
+      phase2Replacements,
     };
   } finally {
     if (httpContext) {
@@ -541,6 +712,7 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
   }
 
   const downloadDir = await resolveDownloadDir(name, recipe.downloadDir);
+  let executedVersion = recipe.version;
 
   if (options.heal) {
     const result = await runPlanStepsWithHeal(
@@ -549,7 +721,7 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
       downloadDir,
     );
 
-    const { healStats, selectorPatches, phase2Replacement } = result;
+    const { healStats, selectorPatches, phase2Replacements } = result;
     if (healStats.phase1Healed > 0 || healStats.phase2ReRecorded > 0) {
       let mergedSteps = recipe.steps.map((s) => {
         const newSelectors = selectorPatches.get(s.id);
@@ -559,12 +731,7 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
         return s;
       });
 
-      if (phase2Replacement) {
-        const idx = mergedSteps.findIndex((s) => s.id === phase2Replacement.replacedFromStepId);
-        if (idx >= 0) {
-          mergedSteps = [...mergedSteps.slice(0, idx), ...phase2Replacement.newSteps];
-        }
-      }
+      mergedSteps = applyPhase2Replacements(mergedSteps, phase2Replacements);
 
       const healed: Recipe = {
         ...recipe,
@@ -576,6 +743,7 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
           `${recipe.notes ?? ""}\nSelf-healed: ${healStats.phase1Healed} auto-fixed, ${healStats.phase2ReRecorded} re-recorded.`.trim(),
       };
       await saveRecipe(healed);
+      executedVersion = healed.version;
       logRecipeSaved(name, healed.version);
       logHealSummary(healStats.phase1Healed, healStats.phase2ReRecorded);
     }
@@ -587,7 +755,7 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
     process.stdout.write(
       `${JSON.stringify({
         name,
-        version: recipe.version,
+        version: executedVersion,
         ok: true,
         phase: "execute",
         resolvedVars: plan.resolvedVars,
@@ -595,4 +763,15 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
       })}\n`,
     );
   }
+};
+
+/** @internal */
+export const _runInternals = {
+  matchesUrl,
+  extractHostnameForGuardUrl,
+  canSkipGuardForHttp,
+  syncHttpCookiesToBrowserContext,
+  parseContentDispositionFilename,
+  extensionFromContentType,
+  applyPhase2Replacements,
 };

@@ -43,6 +43,7 @@ export type RecordedEvent = {
   requestUrl?: string;
   responseUrl?: string;
   headers?: Record<string, string>;
+  postData?: string;
   secret?: boolean;
   secretFieldName?: string;
 };
@@ -55,6 +56,10 @@ export type RecipeStep = {
   mode: StepMode;
   action: "goto" | "click" | "fill" | "press" | "fetch" | "extract" | "ensure_login";
   url?: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  download?: boolean;
   selectorVariants?: string[];
   value?: string;
   key?: string;

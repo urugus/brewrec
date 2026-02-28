@@ -40,6 +40,7 @@ const wirePageEvents = async (name: string, page: Page): Promise<void> => {
       requestUrl: request.url(),
       method: request.method(),
       headers: request.headers(),
+      postData: request.postData() ?? undefined,
     });
   });
 

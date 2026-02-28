@@ -20,6 +20,8 @@ type ResponseInfo = {
   contentType?: string;
 };
 
+const DEFAULT_HTTP_METHOD = "GET";
+
 export type CompileStats = {
   httpPromoted: number;
   httpSkipped: number;
@@ -108,6 +110,45 @@ export const isApiCandidate = (requestEvent: RecordedEvent, response?: ResponseI
   return score >= 2;
 };
 
+const normalizeHttpMethod = (method?: string): string => {
+  const normalized = method?.trim().toUpperCase();
+  return normalized && normalized.length > 0 ? normalized : DEFAULT_HTTP_METHOD;
+};
+
+const pickReplayHeaders = (
+  headers?: Record<string, string>,
+): Record<string, string> | undefined => {
+  if (!headers) return undefined;
+  const picked: Record<string, string> = {};
+  const contentType = headers["content-type"] ?? headers["Content-Type"];
+  const accept = headers.accept ?? headers.Accept;
+  if (contentType) picked["content-type"] = contentType;
+  if (accept) picked.accept = accept;
+  return Object.keys(picked).length > 0 ? picked : undefined;
+};
+
+const requestEventToFetchStep = (
+  id: string,
+  title: string,
+  event: RecordedEvent,
+  options?: { guards?: RecipeStep["guards"]; download?: boolean },
+): RecipeStep => {
+  const method = normalizeHttpMethod(event.method);
+  const body = method === "GET" || method === "HEAD" ? undefined : event.postData;
+  return {
+    id,
+    title,
+    mode: "http",
+    action: "fetch",
+    url: event.requestUrl,
+    method,
+    headers: pickReplayHeaders(event.headers),
+    body,
+    guards: options?.guards,
+    download: options?.download,
+  };
+};
+
 const eventToStep = (
   event: RecordedEvent,
   index: number,
@@ -161,27 +202,16 @@ const eventToStep = (
 
     if (isDocumentDownload(reqUrl)) {
       seenRequestUrls.add(reqUrl);
-      return {
-        id,
-        title: "Download document",
-        mode: "http",
-        action: "fetch",
-        url: reqUrl,
-      };
+      return requestEventToFetchStep(id, "Download document", event, { download: true });
     }
 
     const response = responseMap.get(reqUrl);
     if (!isApiCandidate(event, response)) return null;
 
     seenRequestUrls.add(reqUrl);
-    return {
-      id,
-      title: "Fetch API",
-      mode: "http",
-      action: "fetch",
-      url: reqUrl,
+    return requestEventToFetchStep(id, "Fetch API", event, {
       guards: [{ type: "url_is", value: event.url }],
-    };
+    });
   }
 
   return null;
