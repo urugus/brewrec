@@ -10,7 +10,7 @@ import { startUiServer } from "./ui/server.js";
 const program = new Command();
 const collectOptionValues = (value: string, previous: string[]): string[] => [...previous, value];
 
-program.name("browrec").description("Browser record/compile/run CLI").version("0.1.0");
+program.name("browrec").description("Browser record/compile/run CLI").version("0.2.0");
 
 program
   .command("record")

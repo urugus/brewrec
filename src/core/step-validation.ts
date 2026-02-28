@@ -33,7 +33,11 @@ const evaluateGuard = async (guard: Guard, context: GuardContext): Promise<boole
   if (guard.type === "text_visible") {
     if (!context.page) return true;
     try {
-      return await context.page.getByText(guard.value).first().isVisible({ timeout: 1200 });
+      await context.page
+        .getByText(guard.value)
+        .first()
+        .waitFor({ state: "visible", timeout: 1200 });
+      return true;
     } catch {
       return false;
     }
@@ -62,7 +66,11 @@ const evaluateEffect = async (effect: Effect, context: EffectContext): Promise<b
   if (effect.type === "text_visible") {
     if (!context.page) return true;
     try {
-      return await context.page.getByText(effect.value).first().isVisible({ timeout: 2000 });
+      await context.page
+        .getByText(effect.value)
+        .first()
+        .waitFor({ state: "visible", timeout: 2000 });
+      return true;
     } catch {
       return false;
     }

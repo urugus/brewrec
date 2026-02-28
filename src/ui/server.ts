@@ -4,6 +4,7 @@ import express from "express";
 import open from "open";
 import { PUBLIC_DIR } from "../core/paths.js";
 import { listRecipes, loadRecipe, saveRecipe } from "../core/recipe-store.js";
+import type { Recipe } from "../types.js";
 
 export const startUiServer = async (port = 4312): Promise<void> => {
   const app = express();
@@ -33,7 +34,17 @@ export const startUiServer = async (port = 4312): Promise<void> => {
 
   app.put("/api/recipes/:id", async (req, res) => {
     try {
-      await saveRecipe(req.body);
+      const body = req.body as Partial<Recipe>;
+      if (!body || typeof body !== "object" || typeof body.id !== "string") {
+        res.status(400).json({ error: "invalid recipe payload" });
+        return;
+      }
+      if (body.id !== req.params.id) {
+        res.status(400).json({ error: "recipe id mismatch" });
+        return;
+      }
+
+      await saveRecipe(body as Recipe);
       res.json({ ok: true });
     } catch {
       res.status(400).json({ error: "invalid recipe payload" });
