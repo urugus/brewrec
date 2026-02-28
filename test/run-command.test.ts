@@ -1,6 +1,7 @@
 import type { APIRequestContext, BrowserContext } from "playwright";
 import { describe, expect, it, vi } from "vitest";
 import { _runInternals } from "../src/commands/run.js";
+import { matchesUrl } from "../src/core/step-validation.js";
 import type { RecipeStep } from "../src/types.js";
 
 describe("run command internals", () => {
@@ -44,12 +45,8 @@ describe("run command internals", () => {
   });
 
   it("matches wildcard URL patterns", () => {
-    expect(
-      _runInternals.matchesUrl("https://example.com/path*", "https://example.com/path?a=1"),
-    ).toBe(true);
-    expect(_runInternals.matchesUrl("https://example.com/path", "https://example.com/other")).toBe(
-      false,
-    );
+    expect(matchesUrl("https://example.com/path*", "https://example.com/path?a=1")).toBe(true);
+    expect(matchesUrl("https://example.com/path", "https://example.com/other")).toBe(false);
   });
 
   it("supports wildcard url_is guards when checking HTTP guard heal fallback", () => {
