@@ -55,4 +55,48 @@ describe("ui payload validation", () => {
 
     expect(_uiInternals.isValidRecipe(invalid)).toBe(false);
   });
+
+  it("rejects arrays where object is required", () => {
+    const invalid = {
+      ...baseRecipe(),
+      fallback: [],
+    };
+
+    expect(_uiInternals.isValidRecipe(invalid)).toBe(false);
+  });
+
+  it("rejects fill step without required selector/value", () => {
+    const invalid = {
+      ...baseRecipe(),
+      steps: [
+        {
+          id: "s1",
+          title: "fill",
+          mode: "pw",
+          action: "fill",
+          selectorVariants: [],
+          value: "",
+        },
+      ],
+    };
+
+    expect(_uiInternals.isValidRecipe(invalid)).toBe(false);
+  });
+
+  it("rejects browser-only actions in http mode", () => {
+    const invalid = {
+      ...baseRecipe(),
+      steps: [
+        {
+          id: "s1",
+          title: "click over http",
+          mode: "http",
+          action: "click",
+          selectorVariants: ["#x"],
+        },
+      ],
+    };
+
+    expect(_uiInternals.isValidRecipe(invalid)).toBe(false);
+  });
 });

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium, request } from "playwright";
-import type { APIRequestContext, Page } from "playwright";
+import type { APIRequestContext, BrowserContext, Page } from "playwright";
 import { eventsToSteps, isDocumentDownload } from "../core/compile-heuristic.js";
 import { buildExecutionPlan } from "../core/execution-plan.js";
 import { resolveDownloadDir } from "../core/fs.js";
@@ -109,14 +109,18 @@ const tryGuardWithHeal = async (
   for (const guard of guards) {
     if (guard.type === "url_is") {
       if (matchesUrl(guard.value, currentUrl)) continue;
+      const expectedHostname = extractHostnameForGuardUrl(guard.value);
+      let actualHostname: string | undefined;
       try {
-        const expected = new URL(guard.value);
-        const actual = new URL(currentUrl);
-        if (expected.hostname === actual.hostname) {
-          logGuardSkipped(guard.value, currentUrl);
-          continue;
-        }
+        actualHostname = new URL(currentUrl).hostname;
       } catch {
+        // ignore; handled below
+      }
+      if (expectedHostname && actualHostname && expectedHostname === actualHostname) {
+        logGuardSkipped(guard.value, currentUrl);
+        continue;
+      }
+      if (!expectedHostname) {
         process.stderr.write(
           `    -> [Guard修復] URLパース失敗: guard=${guard.value}, current=${currentUrl}\n`,
         );
@@ -319,20 +323,45 @@ const setupDownloadHandler = (page: Page, downloadDir: string): void => {
   });
 };
 
+const extractHostnameForGuardUrl = (guardValue: string): string | undefined => {
+  const normalized = guardValue.replace(/\*+$/, "");
+  try {
+    return new URL(normalized).hostname;
+  } catch {
+    return undefined;
+  }
+};
+
 const canSkipGuardForHttp = (step: RecipeStep, currentUrl: string | undefined): boolean => {
   if (!currentUrl) return false;
+  let actualHostname: string | undefined;
+  try {
+    actualHostname = new URL(currentUrl).hostname;
+  } catch {
+    return false;
+  }
+
   for (const guard of step.guards ?? []) {
     if (guard.type === "url_is") {
-      try {
-        const expected = new URL(guard.value);
-        const actual = new URL(currentUrl);
-        if (expected.hostname === actual.hostname) return true;
-      } catch {
-        // invalid URL
-      }
+      const expectedHostname = extractHostnameForGuardUrl(guard.value);
+      if (expectedHostname && expectedHostname === actualHostname) return true;
     }
   }
   return false;
+};
+
+const syncHttpCookiesToBrowserContext = async (
+  context: BrowserContext | null,
+  httpContext: APIRequestContext | undefined,
+): Promise<void> => {
+  if (!context || !httpContext) return;
+  try {
+    const state = await httpContext.storageState();
+    if (!state.cookies || state.cookies.length === 0) return;
+    await context.addCookies(state.cookies);
+  } catch {
+    // best-effort only
+  }
 };
 
 const runHttpStep = async (
@@ -439,6 +468,7 @@ const runPlanSteps = async (
           throw new Error(`Playwright page is not available for step ${step.id}`);
         }
         if (httpContext) {
+          await syncHttpCookiesToBrowserContext(pwContext, httpContext);
           await httpContext.dispose();
           httpContext = undefined;
         }
@@ -549,6 +579,7 @@ const runPlanStepsWithHeal = async (
 
       try {
         if (httpContext) {
+          await syncHttpCookiesToBrowserContext(context, httpContext);
           await httpContext.dispose();
           httpContext = undefined;
         }
@@ -623,9 +654,11 @@ const runPlanStepsWithHeal = async (
               previousStepMode = "http";
             } else {
               if (httpContext) {
+                await syncHttpCookiesToBrowserContext(context, httpContext);
                 await httpContext.dispose();
                 httpContext = undefined;
               }
+              await assertGuards(newStep, { currentUrl: pageUrl ?? page.url(), page });
               pageUrl = await executeStep(page, newStep, pageUrl);
               previousStepMode = "pw";
             }
@@ -735,6 +768,9 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
 /** @internal */
 export const _runInternals = {
   matchesUrl,
+  extractHostnameForGuardUrl,
+  canSkipGuardForHttp,
+  syncHttpCookiesToBrowserContext,
   parseContentDispositionFilename,
   extensionFromContentType,
   applyPhase2Replacements,

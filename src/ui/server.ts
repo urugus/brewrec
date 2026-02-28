@@ -7,7 +7,7 @@ import { listRecipes, loadRecipe, saveRecipe } from "../core/recipe-store.js";
 import type { Recipe } from "../types.js";
 
 const isObject = (value: unknown): value is Record<string, unknown> => {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 };
 
 const isStringArray = (value: unknown): value is string[] => {
@@ -71,6 +71,30 @@ const isValidRecipe = (value: unknown): value is Recipe => {
           return false;
         if (typeof effect.value !== "string") return false;
       }
+    }
+
+    const action = String(step.action);
+    const mode = String(step.mode);
+    if (mode === "http" && ["goto", "click", "fill", "press"].includes(action)) return false;
+
+    if (action === "click" || action === "fill") {
+      const selectorVariants = step.selectorVariants;
+      if (!isStringArray(selectorVariants) || selectorVariants.length === 0) return false;
+    }
+
+    if (action === "fill") {
+      const valueField = step.value;
+      if (typeof valueField !== "string" || valueField.length === 0) return false;
+    }
+
+    if (action === "press") {
+      const key = step.key;
+      if (typeof key !== "string" || key.length === 0) return false;
+    }
+
+    if (action === "goto" || action === "fetch") {
+      const url = step.url;
+      if (typeof url !== "string" || url.length === 0) return false;
     }
   }
 

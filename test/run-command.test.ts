@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import type { APIRequestContext, BrowserContext } from "playwright";
+import { describe, expect, it, vi } from "vitest";
 import { _runInternals } from "../src/commands/run.js";
 import type { RecipeStep } from "../src/types.js";
 
@@ -49,5 +50,46 @@ describe("run command internals", () => {
     expect(_runInternals.matchesUrl("https://example.com/path", "https://example.com/other")).toBe(
       false,
     );
+  });
+
+  it("supports wildcard url_is guards when checking HTTP guard heal fallback", () => {
+    const step: RecipeStep = {
+      id: "s-http",
+      title: "fetch",
+      mode: "http",
+      action: "fetch",
+      url: "https://example.com/api",
+      guards: [{ type: "url_is", value: "https://example.com/path*" }],
+    };
+
+    expect(_runInternals.canSkipGuardForHttp(step, "https://example.com/another")).toBe(true);
+    expect(_runInternals.canSkipGuardForHttp(step, "https://other.example.com/another")).toBe(
+      false,
+    );
+  });
+
+  it("syncs HTTP cookies back to browser context", async () => {
+    const addCookies = vi.fn(async () => {});
+    const pwContext = { addCookies } as unknown as BrowserContext;
+    const httpContext = {
+      storageState: async () => ({
+        cookies: [
+          {
+            name: "sid",
+            value: "abc",
+            domain: "example.com",
+            path: "/",
+            expires: -1,
+            httpOnly: true,
+            secure: true,
+            sameSite: "Lax" as const,
+          },
+        ],
+        origins: [],
+      }),
+    } as unknown as APIRequestContext;
+
+    await _runInternals.syncHttpCookiesToBrowserContext(pwContext, httpContext);
+    expect(addCookies).toHaveBeenCalledTimes(1);
   });
 });
