@@ -126,6 +126,8 @@ describe("eventsToSteps", () => {
     expect(steps[0]?.action).toBe("goto");
     expect(steps[1]?.action).toBe("fill");
     expect(steps[2]?.mode).toBe("http");
+    expect(steps[2]?.method).toBe("GET");
+    expect(steps[2]?.headers).toEqual({ accept: "application/json" });
   });
 
   it("filters static assets, keeps documents, and deduplicates requests", () => {
@@ -178,8 +180,42 @@ describe("eventsToSteps", () => {
     expect(steps).toHaveLength(3);
     expect(steps[0]?.action).toBe("goto");
     expect(steps[1]?.title).toBe("Download document");
+    expect(steps[1]?.download).toBe(true);
     expect(steps[2]?.title).toBe("Fetch API");
     expect(stats.httpPromoted).toBe(2);
+  });
+
+  it("preserves request method and body for non-GET API requests", () => {
+    const events: RecordedEvent[] = [
+      {
+        ts: "2026-02-26T00:00:00.000Z",
+        type: "response",
+        url: "https://example.com/form",
+        responseUrl: "https://example.com/api/submit",
+        headers: { "content-type": "application/json" },
+        status: 200,
+      },
+      {
+        ts: "2026-02-26T00:00:01.000Z",
+        type: "request",
+        url: "https://example.com/form",
+        requestUrl: "https://example.com/api/submit",
+        method: "post",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        postData: '{"name":"alice"}',
+      },
+    ];
+
+    const steps = eventsToSteps(events);
+
+    expect(steps).toHaveLength(1);
+    expect(steps[0]?.action).toBe("fetch");
+    expect(steps[0]?.method).toBe("POST");
+    expect(steps[0]?.body).toBe('{"name":"alice"}');
+    expect(steps[0]?.headers).toEqual({
+      "content-type": "application/json",
+      accept: "application/json",
+    });
   });
 });
 
