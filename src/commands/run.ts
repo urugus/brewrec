@@ -1,6 +1,6 @@
 import path from "node:path";
 import { chromium, request } from "playwright";
-import type { BrowserContext, Page } from "playwright";
+import type { APIRequestContext, BrowserContext, Page } from "playwright";
 
 type RuntimeStorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
 import { eventsToSteps } from "../core/compile-heuristic.js";
@@ -209,37 +209,30 @@ const canSkipGuardForHttp = (step: RecipeStep, currentUrl: string | undefined): 
 };
 
 const runHttpStep = async (
+  context: APIRequestContext,
   step: RecipeStep,
-  currentUrl: string | undefined,
-  storageState?: RuntimeStorageState,
+  guardUrl: string | undefined,
+  beforeUrl: string | undefined,
   heal?: boolean,
 ): Promise<string | undefined> => {
-  const context = await request.newContext(storageState ? { storageState } : undefined);
   try {
-    try {
-      await assertGuards(step, { currentUrl });
-    } catch {
-      if (heal && canSkipGuardForHttp(step, currentUrl)) {
-        logGuardSkipped(
-          step.guards?.find((g) => g.type === "url_is")?.value ?? "",
-          currentUrl ?? "",
-        );
-      } else {
-        throw new Error(
-          `Guard failed: ${step.guards?.map((g) => `${g.type}=${g.value}`).join(", ")} (step=${step.id})`,
-        );
-      }
+    await assertGuards(step, { currentUrl: guardUrl });
+  } catch {
+    if (heal && canSkipGuardForHttp(step, guardUrl)) {
+      logGuardSkipped(step.guards?.find((g) => g.type === "url_is")?.value ?? "", guardUrl ?? "");
+    } else {
+      throw new Error(
+        `Guard failed: ${step.guards?.map((g) => `${g.type}=${g.value}`).join(", ")} (step=${step.id})`,
+      );
     }
-
-    if (step.action !== "fetch" || !step.url) return currentUrl;
-
-    const response = await context.get(step.url, { timeout: 5000 });
-    const responseUrl = response.url();
-    await assertEffects(step, { beforeUrl: currentUrl, currentUrl: responseUrl });
-    return responseUrl;
-  } finally {
-    await context.dispose();
   }
+
+  if (step.action !== "fetch" || !step.url) return beforeUrl;
+
+  const response = await context.get(step.url, { timeout: 5000 });
+  const responseUrl = response.url();
+  await assertEffects(step, { beforeUrl, currentUrl: responseUrl });
+  return responseUrl;
 };
 
 const executePwStepWithHeal = async (
@@ -300,28 +293,48 @@ const runPlanSteps = async (
   const browser = hasPwStep ? await chromium.launch({ headless: true }) : null;
   const pwContext = browser ? await browser.newContext({ acceptDownloads: true }) : null;
   const page = pwContext ? await pwContext.newPage() : null;
+  let httpContext: APIRequestContext | undefined;
   if (page) {
     setupDownloadHandler(page, downloadDir);
   }
 
   try {
-    let currentUrl: string | undefined;
+    let pageUrl: string | undefined;
+    let httpUrl: string | undefined;
+    let previousStepMode: RecipeStep["mode"] | undefined;
     for (const step of steps) {
       if (step.mode === "pw") {
         if (!page) {
           throw new Error(`Playwright page is not available for step ${step.id}`);
         }
-        await assertGuards(step, { currentUrl: currentUrl ?? page.url(), page });
-        currentUrl = await executeStep(page, step, currentUrl);
+        if (httpContext) {
+          await httpContext.dispose();
+          httpContext = undefined;
+        }
+        await assertGuards(step, { currentUrl: pageUrl ?? page.url(), page });
+        pageUrl = await executeStep(page, step, pageUrl);
+        previousStepMode = "pw";
         continue;
       }
 
-      const maybeStorage = pwContext ? await pwContext.storageState() : undefined;
-      currentUrl = await runHttpStep(step, currentUrl, maybeStorage);
+      if (!httpContext || previousStepMode !== "http") {
+        if (httpContext) {
+          await httpContext.dispose();
+        }
+        const maybeStorage = pwContext ? await pwContext.storageState() : undefined;
+        httpContext = await request.newContext(
+          maybeStorage ? { storageState: maybeStorage } : undefined,
+        );
+      }
+      httpUrl = await runHttpStep(httpContext, step, pageUrl ?? httpUrl, httpUrl ?? pageUrl);
+      previousStepMode = "http";
     }
 
-    return currentUrl ?? page?.url();
+    return pageUrl ?? httpUrl ?? page?.url();
   } finally {
+    if (httpContext) {
+      await httpContext.dispose();
+    }
     if (browser) {
       await browser.close();
     }
@@ -341,6 +354,7 @@ const runPlanStepsWithHeal = async (
   const browser = hasPwStep ? await chromium.launch({ headless: false }) : null;
   const context = browser ? await browser.newContext({ acceptDownloads: true }) : null;
   const page = context ? await context.newPage() : null;
+  let httpContext: APIRequestContext | undefined;
 
   try {
     const healRecordBuffer: RecordedEvent[] = [];
@@ -354,15 +368,32 @@ const runPlanStepsWithHeal = async (
       setupDownloadHandler(page, downloadDir);
     }
 
-    let currentUrl: string | undefined;
+    let pageUrl: string | undefined;
+    let httpUrl: string | undefined;
+    let previousStepMode: RecipeStep["mode"] | undefined;
 
     for (const step of steps) {
       logStepStart(step.id, step.title);
 
       if (step.mode === "http") {
         try {
-          const maybeStorage = context ? await context.storageState() : undefined;
-          currentUrl = await runHttpStep(step, currentUrl, maybeStorage, true);
+          if (!httpContext || previousStepMode !== "http") {
+            if (httpContext) {
+              await httpContext.dispose();
+            }
+            const maybeStorage = context ? await context.storageState() : undefined;
+            httpContext = await request.newContext(
+              maybeStorage ? { storageState: maybeStorage } : undefined,
+            );
+          }
+          httpUrl = await runHttpStep(
+            httpContext,
+            step,
+            pageUrl ?? httpUrl,
+            httpUrl ?? pageUrl,
+            true,
+          );
+          previousStepMode = "http";
           logStepOk();
           continue;
         } catch (err) {
@@ -378,12 +409,17 @@ const runPlanStepsWithHeal = async (
       }
 
       try {
-        const result = await executePwStepWithHeal(page, step, currentUrl, llmCommand);
-        currentUrl = result.currentUrl;
+        if (httpContext) {
+          await httpContext.dispose();
+          httpContext = undefined;
+        }
+        const result = await executePwStepWithHeal(page, step, pageUrl, llmCommand);
+        pageUrl = result.currentUrl;
         if (result.healed && result.patchSelectors) {
           selectorPatches.set(step.id, result.patchSelectors);
           healStats.phase1Healed++;
         }
+        previousStepMode = "pw";
         logStepOk();
       } catch (err) {
         logStepFailed((err as Error).message);
@@ -428,10 +464,30 @@ const runPlanStepsWithHeal = async (
           logStepStart(newStep.id, newStep.title);
           try {
             if (newStep.mode === "http") {
-              const maybeStorage = context ? await context.storageState() : undefined;
-              currentUrl = await runHttpStep(newStep, currentUrl, maybeStorage, true);
+              if (!httpContext || previousStepMode !== "http") {
+                if (httpContext) {
+                  await httpContext.dispose();
+                }
+                const maybeStorage = context ? await context.storageState() : undefined;
+                httpContext = await request.newContext(
+                  maybeStorage ? { storageState: maybeStorage } : undefined,
+                );
+              }
+              httpUrl = await runHttpStep(
+                httpContext,
+                newStep,
+                pageUrl ?? httpUrl,
+                httpUrl ?? pageUrl,
+                true,
+              );
+              previousStepMode = "http";
             } else {
-              currentUrl = await executeStep(page, newStep, currentUrl);
+              if (httpContext) {
+                await httpContext.dispose();
+                httpContext = undefined;
+              }
+              pageUrl = await executeStep(page, newStep, pageUrl);
+              previousStepMode = "pw";
             }
             logStepOk();
           } catch (reErr) {
@@ -445,12 +501,15 @@ const runPlanStepsWithHeal = async (
     }
 
     return {
-      lastUrl: currentUrl ?? page?.url(),
+      lastUrl: pageUrl ?? httpUrl ?? page?.url(),
       healStats,
       selectorPatches,
       phase2Replacement,
     };
   } finally {
+    if (httpContext) {
+      await httpContext.dispose();
+    }
     if (browser) {
       await browser.close();
     }
