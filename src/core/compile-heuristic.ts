@@ -110,7 +110,7 @@ export const isApiCandidate = (requestEvent: RecordedEvent, response?: ResponseI
   return score >= 2;
 };
 
-const normalizeHttpMethod = (method?: string): string => {
+export const normalizeHttpMethod = (method?: string): string => {
   const normalized = method?.trim().toUpperCase();
   return normalized && normalized.length > 0 ? normalized : DEFAULT_HTTP_METHOD;
 };

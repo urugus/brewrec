@@ -12,7 +12,7 @@ type EffectContext = {
   page?: Page;
 };
 
-const matchesUrl = (pattern: string, currentUrl: string): boolean => {
+export const matchesUrl = (pattern: string, currentUrl: string): boolean => {
   if (pattern.endsWith("*")) {
     return currentUrl.startsWith(pattern.slice(0, -1));
   }

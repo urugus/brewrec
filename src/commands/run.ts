@@ -2,7 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { chromium, request } from "playwright";
 import type { APIRequestContext, BrowserContext, Page } from "playwright";
-import { eventsToSteps, isDocumentDownload } from "../core/compile-heuristic.js";
+import {
+  eventsToSteps,
+  isDocumentDownload,
+  normalizeHttpMethod,
+} from "../core/compile-heuristic.js";
 import { buildExecutionPlan } from "../core/execution-plan.js";
 import { resolveDownloadDir } from "../core/fs.js";
 import {
@@ -21,7 +25,7 @@ import {
 import { injectRecordingCapabilities } from "../core/init-script.js";
 import { loadRecipe, saveRecipe } from "../core/recipe-store.js";
 import { healSelector } from "../core/selector-healer.js";
-import { assertEffects, assertGuards } from "../core/step-validation.js";
+import { assertEffects, assertGuards, matchesUrl } from "../core/step-validation.js";
 import { parseCliVariables } from "../core/template-vars.js";
 import type { Recipe, RecipeStep, RecordedEvent } from "../types.js";
 
@@ -54,15 +58,11 @@ export const applyPhase2Replacements = (
   baseSteps: RecipeStep[],
   replacements: HealRunResult["phase2Replacements"],
 ): RecipeStep[] => {
-  let mergedSteps = [...baseSteps];
+  const mergedSteps = [...baseSteps];
   for (const replacement of replacements) {
     const idx = mergedSteps.findIndex((s) => s.id === replacement.replacedFromStepId);
     if (idx < 0) continue;
-    mergedSteps = [
-      ...mergedSteps.slice(0, idx),
-      ...replacement.newSteps,
-      ...mergedSteps.slice(idx + 1),
-    ];
+    mergedSteps.splice(idx, 1, ...replacement.newSteps);
   }
   return mergedSteps;
 };
@@ -93,11 +93,6 @@ const tryFill = async (page: Page, selectors: string[], value: string): Promise<
   throw new Error(`Fill failed for selectors: ${selectors.join(", ")}`);
 };
 
-const matchesUrl = (pattern: string, currentUrl: string): boolean => {
-  if (pattern.endsWith("*")) return currentUrl.startsWith(pattern.slice(0, -1));
-  return currentUrl === pattern;
-};
-
 const tryGuardWithHeal = async (
   step: RecipeStep,
   currentUrl: string,
@@ -109,18 +104,11 @@ const tryGuardWithHeal = async (
   for (const guard of guards) {
     if (guard.type === "url_is") {
       if (matchesUrl(guard.value, currentUrl)) continue;
-      const expectedHostname = extractHostnameForGuardUrl(guard.value);
-      let actualHostname: string | undefined;
-      try {
-        actualHostname = new URL(currentUrl).hostname;
-      } catch {
-        // ignore; handled below
-      }
-      if (expectedHostname && actualHostname && expectedHostname === actualHostname) {
+      if (guardHostnameMatches(guard.value, currentUrl)) {
         logGuardSkipped(guard.value, currentUrl);
         continue;
       }
-      if (!expectedHostname) {
+      if (!extractHostnameForGuardUrl(guard.value)) {
         process.stderr.write(
           `    -> [Guard修復] URLパース失敗: guard=${guard.value}, current=${currentUrl}\n`,
         );
@@ -264,19 +252,24 @@ const extensionFromContentType = (contentType?: string): string => {
   return "";
 };
 
+const MAX_UNIQUE_PATH_ATTEMPTS = 1000;
+
 const ensureUniquePath = async (targetPath: string): Promise<string> => {
   const parsed = path.parse(targetPath);
   let candidate = targetPath;
-  let count = 1;
-  while (true) {
+  for (let count = 1; count <= MAX_UNIQUE_PATH_ATTEMPTS; count++) {
     try {
-      await fs.access(candidate);
-      candidate = path.join(parsed.dir, `${parsed.name}-${count}${parsed.ext}`);
-      count += 1;
-    } catch {
+      const handle = await fs.open(candidate, "wx");
+      await handle.close();
       return candidate;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") return candidate;
+      candidate = path.join(parsed.dir, `${parsed.name}-${count}${parsed.ext}`);
     }
   }
+  throw new Error(
+    `Could not find unique path after ${MAX_UNIQUE_PATH_ATTEMPTS} attempts: ${targetPath}`,
+  );
 };
 
 const saveHttpDownloadIfNeeded = async (
@@ -332,20 +325,24 @@ const extractHostnameForGuardUrl = (guardValue: string): string | undefined => {
   }
 };
 
+const parseHostname = (url: string): string | undefined => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return undefined;
+  }
+};
+
+const guardHostnameMatches = (guardValue: string, currentUrl: string): boolean => {
+  const expected = extractHostnameForGuardUrl(guardValue);
+  const actual = parseHostname(currentUrl);
+  return Boolean(expected && actual && expected === actual);
+};
+
 const canSkipGuardForHttp = (step: RecipeStep, currentUrl: string | undefined): boolean => {
   if (!currentUrl) return false;
-  let actualHostname: string | undefined;
-  try {
-    actualHostname = new URL(currentUrl).hostname;
-  } catch {
-    return false;
-  }
-
   for (const guard of step.guards ?? []) {
-    if (guard.type === "url_is") {
-      const expectedHostname = extractHostnameForGuardUrl(guard.value);
-      if (expectedHostname && expectedHostname === actualHostname) return true;
-    }
+    if (guard.type === "url_is" && guardHostnameMatches(guard.value, currentUrl)) return true;
   }
   return false;
 };
@@ -386,7 +383,7 @@ const runHttpStep = async (
 
   if (step.action !== "fetch" || !step.url) return beforeUrl;
 
-  const method = (step.method ?? "GET").toUpperCase();
+  const method = normalizeHttpMethod(step.method);
   const response = await context.fetch(step.url, {
     method,
     headers: step.headers,
@@ -767,8 +764,8 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
 
 /** @internal */
 export const _runInternals = {
-  matchesUrl,
   extractHostnameForGuardUrl,
+  guardHostnameMatches,
   canSkipGuardForHttp,
   syncHttpCookiesToBrowserContext,
   parseContentDispositionFilename,
