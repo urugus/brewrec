@@ -1,9 +1,9 @@
 import path from "node:path";
 import { chromium } from "playwright";
-import { buildExecutionPlan } from "../core/execution-plan.js";
+import { buildExecutionPlanResult, formatBuildExecutionPlanError } from "../core/execution-plan.js";
 import { resolveDownloadDir } from "../core/fs.js";
 import { loadRecipe } from "../core/recipe-store.js";
-import { parseCliVariables } from "../core/template-vars.js";
+import { formatTemplateVarError, parseCliVariablesResult } from "../core/template-vars.js";
 
 type DebugOptions = {
   vars?: string[];
@@ -12,10 +12,20 @@ type DebugOptions = {
 
 export const debugCommand = async (name: string, options: DebugOptions): Promise<void> => {
   const recipe = await loadRecipe(name);
-  const plan = await buildExecutionPlan(recipe, {
-    cliVars: parseCliVariables(options.vars ?? []),
+  const cliVarsResult = parseCliVariablesResult(options.vars ?? []);
+  if (cliVarsResult.isErr()) {
+    throw new Error(formatTemplateVarError(cliVarsResult.error));
+  }
+
+  const planResult = await buildExecutionPlanResult(recipe, {
+    cliVars: cliVarsResult.value,
     llmCommand: options.llmCommand,
   });
+  if (planResult.isErr()) {
+    throw new Error(formatBuildExecutionPlanError(planResult.error));
+  }
+  const plan = planResult.value;
+
   if (plan.unresolvedVars.length > 0) {
     throw new Error(`Unresolved variables: ${plan.unresolvedVars.join(", ")}`);
   }

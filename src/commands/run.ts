@@ -7,7 +7,7 @@ import {
   isDocumentDownload,
   normalizeHttpMethod,
 } from "../core/compile-heuristic.js";
-import { buildExecutionPlan } from "../core/execution-plan.js";
+import { buildExecutionPlanResult, formatBuildExecutionPlanError } from "../core/execution-plan.js";
 import { resolveDownloadDir } from "../core/fs.js";
 import {
   logGuardSkipped,
@@ -32,7 +32,7 @@ import {
   matchesUrl,
   validateGuards,
 } from "../core/step-validation.js";
-import { parseCliVariables } from "../core/template-vars.js";
+import { formatTemplateVarError, parseCliVariablesResult } from "../core/template-vars.js";
 import type { Recipe, RecipeStep, RecordedEvent } from "../types.js";
 
 type RunOptions = {
@@ -686,10 +686,31 @@ const runPlanStepsWithHeal = async (
 
 export const runCommand = async (name: string, options: RunOptions): Promise<void> => {
   const recipe = await loadRecipe(name);
-  const plan = await buildExecutionPlan(recipe, {
-    cliVars: parseCliVariables(options.vars ?? []),
+  const cliVarsResult = parseCliVariablesResult(options.vars ?? []);
+  if (cliVarsResult.isErr()) {
+    const message = formatTemplateVarError(cliVarsResult.error);
+    if (options.json) {
+      process.stdout.write(
+        `${JSON.stringify({ name, version: recipe.version, ok: false, phase: "plan", error: message })}\n`,
+      );
+    }
+    throw new Error(message);
+  }
+
+  const planResult = await buildExecutionPlanResult(recipe, {
+    cliVars: cliVarsResult.value,
     llmCommand: options.llmCommand,
   });
+  if (planResult.isErr()) {
+    const message = formatBuildExecutionPlanError(planResult.error);
+    if (options.json) {
+      process.stdout.write(
+        `${JSON.stringify({ name, version: recipe.version, ok: false, phase: "plan", error: message })}\n`,
+      );
+    }
+    throw new Error(message);
+  }
+  const plan = planResult.value;
 
   if (plan.unresolvedVars.length > 0) {
     const message = `Unresolved variables: ${plan.unresolvedVars.join(", ")}`;
