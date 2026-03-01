@@ -9,7 +9,13 @@ import {
   loadRecipeResult,
   saveRecipeResult,
 } from "../core/recipe-store.js";
+import { formatRecordStoreError, listRecordingsResult } from "../core/record-store.js";
+import { compileServiceResult } from "../services/compile-service.js";
+import { planServiceResult } from "../services/plan-service.js";
+import { repairServiceResult } from "../services/repair-service.js";
+import { runServiceResult } from "../services/run-service.js";
 import type { Recipe } from "../types.js";
+import { endSse, initSse, sendSseEvent, sseReporter } from "./sse.js";
 
 const isObject = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -17,6 +23,17 @@ const isObject = (value: unknown): value is Record<string, unknown> => {
 
 const isStringArray = (value: unknown): value is string[] => {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+};
+
+const isStringRecord = (value: unknown): value is Record<string, string> => {
+  if (!isObject(value)) return false;
+  return Object.values(value).every((v) => typeof v === "string");
+};
+
+const parseVarsBody = (vars: unknown): string[] => {
+  if (!vars) return [];
+  if (!isStringRecord(vars)) return [];
+  return Object.entries(vars).map(([k, v]) => `${k}=${v}`);
 };
 
 const isValidRecipe = (value: unknown): value is Recipe => {
@@ -207,6 +224,87 @@ export const startUiServer = async (port = 4312): Promise<void> => {
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true });
+  });
+
+  app.get("/api/recordings", async (_req, res) => {
+    const result = await listRecordingsResult();
+    if (result.isErr()) {
+      res.status(500).json({ error: formatRecordStoreError(result.error) });
+      return;
+    }
+    res.json(result.value);
+  });
+
+  app.post("/api/compile/:name", async (req, res) => {
+    const { name } = req.params;
+    initSse(res);
+    const progress = sseReporter(res);
+    try {
+      const result = await compileServiceResult(name, { progress });
+      if (result.isErr()) {
+        sendSseEvent(res, "error", { code: result.error.code, message: result.error.message });
+      } else {
+        sendSseEvent(res, "done", result.value);
+      }
+    } catch (cause) {
+      sendSseEvent(res, "error", { code: "unexpected", message: String(cause) });
+    }
+    endSse(res);
+  });
+
+  app.post("/api/run/:name", async (req, res) => {
+    const { name } = req.params;
+    const { vars } = req.body ?? {};
+    const varStrings = parseVarsBody(vars);
+    initSse(res);
+    const progress = sseReporter(res);
+    try {
+      const result = await runServiceResult(name, { vars: varStrings, progress });
+      if (result.isErr()) {
+        sendSseEvent(res, "error", { code: result.error.code, message: result.error.message });
+      } else {
+        sendSseEvent(res, "done", result.value);
+      }
+    } catch (cause) {
+      sendSseEvent(res, "error", { code: "unexpected", message: String(cause) });
+    }
+    endSse(res);
+  });
+
+  app.post("/api/plan/:name", async (req, res) => {
+    const { name } = req.params;
+    const { vars } = req.body ?? {};
+    const varStrings = parseVarsBody(vars);
+    try {
+      const result = await planServiceResult(name, { vars: varStrings });
+      if (result.isErr()) {
+        const clientErrors = new Set(["invalid_vars", "unresolved_vars"]);
+        let status: number;
+        if (result.error.code === "recipe_not_found") {
+          status = 404;
+        } else if (clientErrors.has(result.error.code)) {
+          status = 400;
+        } else {
+          status = 500;
+        }
+        res.status(status).json({ error: result.error.message, code: result.error.code });
+        return;
+      }
+      res.json(result.value);
+    } catch (cause) {
+      res.status(500).json({ error: String(cause), code: "unexpected" });
+    }
+  });
+
+  app.post("/api/repair/:name", async (req, res) => {
+    const { name } = req.params;
+    const result = await repairServiceResult(name);
+    if (result.isErr()) {
+      const status = result.error.code === "recipe_not_found" ? 404 : 500;
+      res.status(status).json({ error: result.error.message, code: result.error.code });
+      return;
+    }
+    res.json(result.value);
   });
 
   app.get("*", async (_req, res) => {

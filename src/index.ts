@@ -4,8 +4,9 @@ import { compileCommandResult } from "./commands/compile.js";
 import { debugCommandResult } from "./commands/debug.js";
 import { recordCommandResult } from "./commands/record.js";
 import { repairCommandResult } from "./commands/repair.js";
-import { formatCommandError } from "./commands/result.js";
+import { formatCommandError, serviceErrorToCommandError } from "./commands/result.js";
 import { runCommandResult } from "./commands/run.js";
+import { listRecipesServiceResult } from "./services/list-service.js";
 import { startUiServer } from "./ui/server.js";
 
 const program = new Command();
@@ -99,6 +100,27 @@ program
   .argument("<name>", "recipe name")
   .action(async (name: string) => {
     await ensureCommandSucceeded(await repairCommandResult(name));
+  });
+
+program
+  .command("list")
+  .option("--json", "json output", false)
+  .action(async (options: { json: boolean }) => {
+    const result = await listRecipesServiceResult();
+    if (result.isErr()) {
+      throw new Error(formatCommandError(serviceErrorToCommandError("list", result.error)));
+    }
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result.value.recipes)}\n`);
+    } else {
+      if (result.value.recipes.length === 0) {
+        process.stdout.write("No recipes found.\n");
+        return;
+      }
+      for (const r of result.value.recipes) {
+        process.stdout.write(`${r.id}  v${r.version}  ${r.updatedAt}  (${r.steps} steps)\n`);
+      }
+    }
   });
 
 program

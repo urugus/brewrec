@@ -1,4 +1,4 @@
-export type CommandName = "record" | "compile" | "run" | "plan" | "debug" | "repair";
+export type CommandName = "record" | "compile" | "run" | "plan" | "debug" | "repair" | "list";
 
 export type CommandError = {
   command: CommandName;
@@ -17,3 +17,11 @@ export const toCommandError = (command: CommandName, cause: unknown): CommandErr
 export const formatCommandError = (error: CommandError): string => {
   return `[${error.command}] ${error.message}`;
 };
+
+export const serviceErrorToCommandError = (
+  command: CommandName,
+  serviceError: { message: string },
+): CommandError => ({
+  command,
+  message: serviceError.message,
+});

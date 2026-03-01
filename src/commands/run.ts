@@ -67,7 +67,7 @@ type HealRunResult = {
   }>;
 };
 
-type RunExecuteError =
+export type RunExecuteError =
   | {
       kind: "context_unavailable";
       stepId: string;
@@ -95,7 +95,7 @@ type RunExecuteError =
       message: string;
     };
 
-const formatRunExecuteError = (error: RunExecuteError): string => {
+export const formatRunExecuteError = (error: RunExecuteError): string => {
   if (error.kind === "context_unavailable") {
     return error.message;
   }
@@ -546,7 +546,7 @@ const executePwStepWithHealResult = async (
   });
 };
 
-const runPlanSteps = async (
+export const runPlanSteps = async (
   steps: RecipeStep[],
   downloadDir: string,
 ): Promise<Result<string | undefined, RunExecuteError>> => {
