@@ -89,4 +89,23 @@ describe("run command internals", () => {
     await _runInternals.syncHttpCookiesToBrowserContext(pwContext, httpContext);
     expect(addCookies).toHaveBeenCalledTimes(1);
   });
+
+  it("formats re-record failure message with step context", () => {
+    const message = _runInternals.formatRunExecuteError({
+      kind: "re_record_failed",
+      stepId: "s1",
+      reRecordedStepId: "s1-healed-1",
+      message: "guard failed",
+    });
+    expect(message).toBe("Re-recorded step s1-healed-1 failed: guard failed");
+  });
+
+  it("formats heal recording failure message", () => {
+    const message = _runInternals.formatRunExecuteError({
+      kind: "heal_record_failed",
+      stepId: "s2",
+      message: "no user actions recorded",
+    });
+    expect(message).toBe("Healing failed for step s2: no user actions recorded");
+  });
 });
