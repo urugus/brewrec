@@ -2,7 +2,7 @@ import path from "node:path";
 import { chromium } from "playwright";
 import { buildExecutionPlanResult, formatBuildExecutionPlanError } from "../core/execution-plan.js";
 import { resolveDownloadDir } from "../core/fs.js";
-import { loadRecipe } from "../core/recipe-store.js";
+import { formatRecipeStoreError, loadRecipeResult } from "../core/recipe-store.js";
 import { formatTemplateVarError, parseCliVariablesResult } from "../core/template-vars.js";
 
 type DebugOptions = {
@@ -11,7 +11,11 @@ type DebugOptions = {
 };
 
 export const debugCommand = async (name: string, options: DebugOptions): Promise<void> => {
-  const recipe = await loadRecipe(name);
+  const recipeResult = await loadRecipeResult(name);
+  if (recipeResult.isErr()) {
+    throw new Error(formatRecipeStoreError(recipeResult.error));
+  }
+  const recipe = recipeResult.value;
   const cliVarsResult = parseCliVariablesResult(options.vars ?? []);
   if (cliVarsResult.isErr()) {
     throw new Error(formatTemplateVarError(cliVarsResult.error));
