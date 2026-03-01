@@ -5,7 +5,13 @@ vi.mock("node:child_process", () => ({
 }));
 
 import { execFile } from "node:child_process";
-import { getMasterKey, setMasterKey } from "../src/core/keychain.js";
+import {
+  formatKeychainError,
+  getMasterKey,
+  getMasterKeyResult,
+  setMasterKey,
+  setMasterKeyResult,
+} from "../src/core/keychain.js";
 
 const mockExecFile = execFile as unknown as Mock;
 
@@ -23,14 +29,15 @@ const mockSuccess = (stdout: string) => {
   );
 };
 
-const mockError = () => {
+const mockError = (code: string | number = "ENOENT") => {
   mockExecFile.mockImplementation(
     (
       _cmd: string,
       _args: string[],
       callback: (err: Error | null, stdout: string, stderr: string) => void,
     ) => {
-      callback(new Error("command failed"), "", "");
+      const error = Object.assign(new Error("command failed"), { code });
+      callback(error, "", "");
     },
   );
 };
@@ -58,6 +65,23 @@ describe("keychain", () => {
     it("setMasterKey returns false", async () => {
       expect(await setMasterKey(Buffer.alloc(32))).toBe(false);
     });
+
+    it("getMasterKeyResult returns unsupported_platform error", async () => {
+      const result = await getMasterKeyResult();
+      expect(result.isErr()).toBe(true);
+      if (result.isErr()) {
+        expect(result.error.kind).toBe("unsupported_platform");
+        expect(formatKeychainError(result.error)).toMatch(/not supported/);
+      }
+    });
+
+    it("setMasterKeyResult returns unsupported_platform error", async () => {
+      const result = await setMasterKeyResult(Buffer.alloc(32));
+      expect(result.isErr()).toBe(true);
+      if (result.isErr()) {
+        expect(result.error.kind).toBe("unsupported_platform");
+      }
+    });
   });
 
   describe("macOS (darwin)", () => {
@@ -65,12 +89,15 @@ describe("keychain", () => {
       Object.defineProperty(process, "platform", { value: "darwin" });
     });
 
-    it("getMasterKey returns buffer on success", async () => {
+    it("getMasterKeyResult returns buffer on success", async () => {
       mockSuccess(`${VALID_HEX_KEY}\n`);
-      const result = await getMasterKey();
-      expect(result).toBeInstanceOf(Buffer);
-      expect(result?.length).toBe(32);
-      expect(result?.toString("hex")).toBe(VALID_HEX_KEY);
+      const result = await getMasterKeyResult();
+      expect(result.isOk()).toBe(true);
+      if (result.isOk()) {
+        expect(result.value).toBeInstanceOf(Buffer);
+        expect(result.value?.length).toBe(32);
+        expect(result.value?.toString("hex")).toBe(VALID_HEX_KEY);
+      }
 
       expect(mockExecFile).toHaveBeenCalledWith(
         "security",
@@ -79,25 +106,44 @@ describe("keychain", () => {
       );
     });
 
-    it("getMasterKey returns null when key not found", async () => {
-      mockError();
-      expect(await getMasterKey()).toBeNull();
+    it("getMasterKeyResult returns command_failed when key lookup fails", async () => {
+      mockError("ENOENT");
+      const result = await getMasterKeyResult();
+      expect(result.isErr()).toBe(true);
+      if (result.isErr()) {
+        expect(result.error.kind).toBe("command_failed");
+        expect(formatKeychainError(result.error)).toContain("spawn=ENOENT");
+      }
     });
 
-    it("getMasterKey returns null for invalid hex", async () => {
+    it("getMasterKeyResult returns invalid_key_format for non-hex", async () => {
       mockSuccess("not-hex-data\n");
-      expect(await getMasterKey()).toBeNull();
+      const result = await getMasterKeyResult();
+      expect(result.isErr()).toBe(true);
+      if (result.isErr()) {
+        expect(result.error.kind).toBe("invalid_key_format");
+        if (result.error.kind === "invalid_key_format") {
+          expect(result.error.reason).toBe("non_hex");
+        }
+      }
     });
 
-    it("getMasterKey returns null for wrong length", async () => {
+    it("getMasterKeyResult returns invalid_key_format for wrong length", async () => {
       mockSuccess("abcd\n");
-      expect(await getMasterKey()).toBeNull();
+      const result = await getMasterKeyResult();
+      expect(result.isErr()).toBe(true);
+      if (result.isErr()) {
+        expect(result.error.kind).toBe("invalid_key_format");
+        if (result.error.kind === "invalid_key_format") {
+          expect(result.error.reason).toBe("invalid_length");
+        }
+      }
     });
 
-    it("setMasterKey returns true on success", async () => {
+    it("setMasterKeyResult returns ok on success", async () => {
       mockSuccess("");
-      const result = await setMasterKey(Buffer.alloc(32));
-      expect(result).toBe(true);
+      const result = await setMasterKeyResult(Buffer.alloc(32));
+      expect(result.isOk()).toBe(true);
 
       expect(mockExecFile).toHaveBeenCalledWith(
         "security",
@@ -106,8 +152,19 @@ describe("keychain", () => {
       );
     });
 
-    it("setMasterKey returns false on failure", async () => {
-      mockError();
+    it("setMasterKeyResult returns command_failed on failure", async () => {
+      mockError(1);
+      const result = await setMasterKeyResult(Buffer.alloc(32));
+      expect(result.isErr()).toBe(true);
+      if (result.isErr()) {
+        expect(result.error.kind).toBe("command_failed");
+        expect(formatKeychainError(result.error)).toContain("exit=1");
+      }
+    });
+
+    it("compatibility wrappers preserve legacy behavior", async () => {
+      mockError("ENOENT");
+      expect(await getMasterKey()).toBeNull();
       expect(await setMasterKey(Buffer.alloc(32))).toBe(false);
     });
   });
@@ -117,11 +174,10 @@ describe("keychain", () => {
       Object.defineProperty(process, "platform", { value: "linux" });
     });
 
-    it("getMasterKey returns buffer on success", async () => {
+    it("getMasterKeyResult uses secret-tool backend", async () => {
       mockSuccess(`${VALID_HEX_KEY}\n`);
-      const result = await getMasterKey();
-      expect(result).toBeInstanceOf(Buffer);
-      expect(result?.toString("hex")).toBe(VALID_HEX_KEY);
+      const result = await getMasterKeyResult();
+      expect(result.isOk()).toBe(true);
 
       expect(mockExecFile).toHaveBeenCalledWith(
         "secret-tool",
@@ -130,31 +186,16 @@ describe("keychain", () => {
       );
     });
 
-    it("getMasterKey returns null when key not found", async () => {
-      mockError();
-      expect(await getMasterKey()).toBeNull();
-    });
-
-    it("getMasterKey returns null for empty output", async () => {
+    it("setMasterKeyResult uses shell pipeline backend", async () => {
       mockSuccess("");
-      expect(await getMasterKey()).toBeNull();
-    });
-
-    it("setMasterKey calls /bin/sh with secret-tool pipe", async () => {
-      mockSuccess("");
-      const result = await setMasterKey(Buffer.alloc(32));
-      expect(result).toBe(true);
+      const result = await setMasterKeyResult(Buffer.alloc(32));
+      expect(result.isOk()).toBe(true);
 
       expect(mockExecFile).toHaveBeenCalledWith(
         "/bin/sh",
         expect.arrayContaining(["-c"]),
         expect.any(Function),
       );
-    });
-
-    it("setMasterKey returns false on failure", async () => {
-      mockError();
-      expect(await setMasterKey(Buffer.alloc(32))).toBe(false);
     });
   });
 });
