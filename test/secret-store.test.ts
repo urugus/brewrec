@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { type Mock, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -11,17 +12,18 @@ vi.mock("../src/core/keychain.js", () => ({
   setMasterKey: (...args: Parameters<typeof mockSetMasterKey>) => mockSetMasterKey(...args),
 }));
 
+import { vaultPath } from "../src/core/fs.js";
 import {
   _resetKeyCache,
   formatSecretStoreError,
   loadSecret,
   loadSecretResult,
   saveSecret,
+  saveSecretResult,
 } from "../src/core/secret-store.js";
 
-const TEST_SECRETS_DIR = path.join(process.cwd(), "secrets");
 const TEST_RECIPE = "test-secret-recipe";
-const vaultFile = path.join(TEST_SECRETS_DIR, `${TEST_RECIPE}.vault.json`);
+const vaultFile = vaultPath(TEST_RECIPE);
 
 const cleanup = async (): Promise<void> => {
   try {
@@ -73,20 +75,75 @@ describe("secret-store", () => {
   });
 
   it("handles corrupted vault gracefully", async () => {
-    await fs.mkdir(TEST_SECRETS_DIR, { recursive: true });
+    await fs.mkdir(path.dirname(vaultFile), { recursive: true });
     await fs.writeFile(vaultFile, "not valid json", "utf-8");
     const result = await loadSecret(TEST_RECIPE, "password");
     expect(result).toBeUndefined();
   });
 
   it("returns typed error for corrupted vault in result API", async () => {
-    await fs.mkdir(TEST_SECRETS_DIR, { recursive: true });
+    await fs.mkdir(path.dirname(vaultFile), { recursive: true });
     await fs.writeFile(vaultFile, "not valid json", "utf-8");
     const result = await loadSecretResult(TEST_RECIPE, "password");
     expect(result.isErr()).toBe(true);
     if (result.isErr()) {
       expect(result.error.kind).toBe("vault_parse_failed");
       expect(formatSecretStoreError(result.error)).toMatch(/Secret vault parse failed/);
+    }
+  });
+
+  it("returns typed error for invalid vault shape in result API", async () => {
+    await fs.mkdir(path.dirname(vaultFile), { recursive: true });
+    await fs.writeFile(vaultFile, "{}", "utf-8");
+    const result = await loadSecretResult(TEST_RECIPE, "password");
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error.kind).toBe("vault_parse_failed");
+    }
+  });
+
+  it("returns undefined for invalid vault shape in compatibility API", async () => {
+    await fs.mkdir(path.dirname(vaultFile), { recursive: true });
+    await fs.writeFile(vaultFile, "{}", "utf-8");
+    const result = await loadSecret(TEST_RECIPE, "password");
+    expect(result).toBeUndefined();
+  });
+
+  it("returns ok from saveSecretResult and persists encrypted entry", async () => {
+    const result = await saveSecretResult(TEST_RECIPE, "token", "abc123");
+    expect(result.isOk()).toBe(true);
+    const raw = await fs.readFile(vaultFile, "utf-8");
+    const vault = JSON.parse(raw);
+    expect(vault.entries.token).toBeDefined();
+    expect(vault.entries.token.ciphertext).not.toContain("abc123");
+  });
+
+  it("returns typed parse error from saveSecretResult on corrupted vault", async () => {
+    await fs.mkdir(path.dirname(vaultFile), { recursive: true });
+    await fs.writeFile(vaultFile, "not valid json", "utf-8");
+    const result = await saveSecretResult(TEST_RECIPE, "token", "abc123");
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error.kind).toBe("vault_parse_failed");
+    }
+  });
+
+  it("returns derive_key_failed from saveSecretResult when legacy key derivation fails", async () => {
+    _resetKeyCache();
+    mockGetMasterKey.mockResolvedValue(null);
+    mockSetMasterKey.mockResolvedValue(false);
+    const userInfoSpy = vi.spyOn(os, "userInfo").mockImplementation(() => {
+      throw new Error("user unavailable");
+    });
+
+    try {
+      const result = await saveSecretResult(TEST_RECIPE, "token", "abc123");
+      expect(result.isErr()).toBe(true);
+      if (result.isErr()) {
+        expect(result.error.kind).toBe("derive_key_failed");
+      }
+    } finally {
+      userInfoSpy.mockRestore();
     }
   });
 

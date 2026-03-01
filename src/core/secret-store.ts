@@ -64,6 +64,26 @@ const causeMessage = (cause: unknown): string => {
   return String(cause);
 };
 
+const isObject = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+};
+
+const isVaultEntry = (value: unknown): value is VaultEntry => {
+  if (!isObject(value)) return false;
+  return (
+    typeof value.iv === "string" &&
+    typeof value.tag === "string" &&
+    typeof value.ciphertext === "string"
+  );
+};
+
+const isVault = (value: unknown): value is Vault => {
+  if (!isObject(value)) return false;
+  if (typeof value.version !== "number") return false;
+  if (!isObject(value.entries)) return false;
+  return Object.values(value.entries).every((entry) => isVaultEntry(entry));
+};
+
 const ALGORITHM = "aes-256-gcm";
 const IV_BYTES = 16;
 const PBKDF2_ITERATIONS = 100_000;
@@ -152,7 +172,15 @@ const readVaultResult = async (recipeName: string): Promise<Result<Vault, Secret
   }
 
   try {
-    return ok(JSON.parse(raw) as Vault);
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isVault(parsed)) {
+      return err({
+        kind: "vault_parse_failed",
+        recipeName,
+        message: "vault has invalid shape",
+      });
+    }
+    return ok(parsed);
   } catch (cause) {
     return err({ kind: "vault_parse_failed", recipeName, message: causeMessage(cause) });
   }
@@ -190,9 +218,15 @@ export const loadSecretResult = async (
     return ok(decrypt(entry, key));
   } catch {
     // Primary key failed — try legacy key for transparent migration
-    const legacy = legacyDeriveKey();
+    let legacyKey: Buffer;
     try {
-      const plaintext = decrypt(entry, legacy);
+      legacyKey = legacyDeriveKey();
+    } catch (cause) {
+      return err({ kind: "derive_key_failed", message: causeMessage(cause) });
+    }
+
+    try {
+      const plaintext = decrypt(entry, legacyKey);
       // Re-encrypt with new key (best-effort; return plaintext regardless)
       const encryptedResult = encryptResult(variableName, plaintext, key);
       if (encryptedResult.isOk()) {
