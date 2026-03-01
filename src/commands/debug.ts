@@ -24,33 +24,33 @@ export const debugCommandResult = async (
   name: string,
   options: DebugOptions,
 ): Promise<Result<void, CommandError>> => {
+  const recipeResult = await loadRecipeResult(name);
+  if (recipeResult.isErr()) {
+    return err(toCommandError("debug", formatRecipeStoreError(recipeResult.error)));
+  }
+  const recipe = recipeResult.value;
+  const cliVarsResult = parseCliVariablesResult(options.vars ?? []);
+  if (cliVarsResult.isErr()) {
+    return err(toCommandError("debug", formatTemplateVarError(cliVarsResult.error)));
+  }
+
+  const planResult = await buildExecutionPlanResult(recipe, {
+    cliVars: cliVarsResult.value,
+    llmCommand: options.llmCommand,
+  });
+  if (planResult.isErr()) {
+    return err(toCommandError("debug", formatBuildExecutionPlanError(planResult.error)));
+  }
+  const plan = planResult.value;
+
+  if (plan.unresolvedVars.length > 0) {
+    return err(toCommandError("debug", `Unresolved variables: ${plan.unresolvedVars.join(", ")}`));
+  }
+
+  const downloadDir = await resolveDownloadDir(name, recipe.downloadDir);
+
+  const browser = await chromium.launch({ headless: false });
   try {
-    const recipeResult = await loadRecipeResult(name);
-    if (recipeResult.isErr()) {
-      throw new Error(formatRecipeStoreError(recipeResult.error));
-    }
-    const recipe = recipeResult.value;
-    const cliVarsResult = parseCliVariablesResult(options.vars ?? []);
-    if (cliVarsResult.isErr()) {
-      throw new Error(formatTemplateVarError(cliVarsResult.error));
-    }
-
-    const planResult = await buildExecutionPlanResult(recipe, {
-      cliVars: cliVarsResult.value,
-      llmCommand: options.llmCommand,
-    });
-    if (planResult.isErr()) {
-      throw new Error(formatBuildExecutionPlanError(planResult.error));
-    }
-    const plan = planResult.value;
-
-    if (plan.unresolvedVars.length > 0) {
-      throw new Error(`Unresolved variables: ${plan.unresolvedVars.join(", ")}`);
-    }
-
-    const downloadDir = await resolveDownloadDir(name, recipe.downloadDir);
-
-    const browser = await chromium.launch({ headless: false });
     const context = await browser.newContext({
       acceptDownloads: true,
       recordVideo: {
@@ -82,9 +82,10 @@ export const debugCommandResult = async (
     }
 
     await page.pause();
-    await browser.close();
     return ok(undefined);
   } catch (cause) {
     return err(toCommandError("debug", cause));
+  } finally {
+    await browser.close();
   }
 };
