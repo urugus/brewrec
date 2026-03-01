@@ -116,6 +116,12 @@ const causeMessage = (cause: unknown): string => {
   return String(cause);
 };
 
+const stepExecutionError = (stepId: string, message: string): RunExecuteError => ({
+  kind: "step_execution_failed",
+  stepId,
+  message,
+});
+
 export const applyPhase2Replacements = (
   baseSteps: RecipeStep[],
   replacements: HealRunResult["phase2Replacements"],
@@ -218,53 +224,57 @@ const settleAfterAction = async (page: Page): Promise<void> => {
   }
 };
 
-const executeStep = async (
+const executeStepResult = async (
   page: Page,
   step: RecipeStep,
   currentUrl: string | undefined,
-): Promise<string> => {
+): Promise<Result<string, RunExecuteError>> => {
   const beforeUrl = currentUrl ?? page.url();
 
-  if (step.action === "goto" && step.url) {
-    await page.goto(step.url, { waitUntil: "domcontentloaded" });
-    const newUrl = page.url();
-    await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
-    return newUrl;
-  }
-
-  if (step.action === "click") {
-    const selectors = step.selectorVariants ?? [];
-    if (selectors.length === 0) {
-      throw new Error(`No selectorVariants for click step: ${step.id}`);
+  try {
+    if (step.action === "goto" && step.url) {
+      await page.goto(step.url, { waitUntil: "domcontentloaded" });
+      const newUrl = page.url();
+      await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
+      return ok(newUrl);
     }
-    await tryClick(page, selectors);
-    await settleAfterAction(page);
-    const newUrl = page.url();
-    await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
-    return newUrl;
-  }
 
-  if (step.action === "fill" && step.value !== undefined) {
-    const selectors = step.selectorVariants ?? [];
-    if (selectors.length === 0) {
-      throw new Error(`No selectorVariants for fill step: ${step.id}`);
+    if (step.action === "click") {
+      const selectors = step.selectorVariants ?? [];
+      if (selectors.length === 0) {
+        return err(stepExecutionError(step.id, `No selectorVariants for click step: ${step.id}`));
+      }
+      await tryClick(page, selectors);
+      await settleAfterAction(page);
+      const newUrl = page.url();
+      await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
+      return ok(newUrl);
     }
-    await tryFill(page, selectors, step.value);
-    await settleAfterAction(page);
-    const newUrl = page.url();
-    await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
-    return newUrl;
-  }
 
-  if (step.action === "press" && step.key) {
-    await page.keyboard.press(step.key);
-    await settleAfterAction(page);
-    const newUrl = page.url();
-    await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
-    return newUrl;
-  }
+    if (step.action === "fill" && step.value !== undefined) {
+      const selectors = step.selectorVariants ?? [];
+      if (selectors.length === 0) {
+        return err(stepExecutionError(step.id, `No selectorVariants for fill step: ${step.id}`));
+      }
+      await tryFill(page, selectors, step.value);
+      await settleAfterAction(page);
+      const newUrl = page.url();
+      await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
+      return ok(newUrl);
+    }
 
-  return currentUrl ?? page.url();
+    if (step.action === "press" && step.key) {
+      await page.keyboard.press(step.key);
+      await settleAfterAction(page);
+      const newUrl = page.url();
+      await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
+      return ok(newUrl);
+    }
+
+    return ok(currentUrl ?? page.url());
+  } catch (cause) {
+    return err(stepExecutionError(step.id, causeMessage(cause)));
+  }
 };
 
 const parseContentDispositionFilename = (contentDisposition?: string): string | undefined => {
@@ -423,79 +433,93 @@ const syncHttpCookiesToBrowserContext = async (
   }
 };
 
-const runHttpStep = async (
+const runHttpStepResult = async (
   context: APIRequestContext,
   step: RecipeStep,
   guardUrl: string | undefined,
   beforeUrl: string | undefined,
   downloadDir: string,
   heal?: boolean,
-): Promise<string | undefined> => {
+): Promise<Result<string | undefined, RunExecuteError>> => {
   const guardResult = await validateGuards(step, { currentUrl: guardUrl });
   if (guardResult.isErr()) {
     if (heal && canSkipGuardForHttp(step, guardUrl)) {
       logGuardSkipped(step.guards?.find((g) => g.type === "url_is")?.value ?? "", guardUrl ?? "");
     } else {
-      throw new Error(formatStepValidationError(guardResult.error));
+      return err(stepExecutionError(step.id, formatStepValidationError(guardResult.error)));
     }
   }
 
-  if (step.action !== "fetch" || !step.url) return beforeUrl;
+  if (step.action !== "fetch" || !step.url) return ok(beforeUrl);
 
-  const method = normalizeHttpMethod(step.method);
-  const response = await context.fetch(step.url, {
-    method,
-    headers: step.headers,
-    data: step.body,
-    timeout: 5000,
-  });
-  const responseUrl = response.url();
-  await saveHttpDownloadIfNeeded(step, response, downloadDir);
-  await assertEffects(step, { beforeUrl, currentUrl: responseUrl });
-  return responseUrl;
+  try {
+    const method = normalizeHttpMethod(step.method);
+    const response = await context.fetch(step.url, {
+      method,
+      headers: step.headers,
+      data: step.body,
+      timeout: 5000,
+    });
+    const responseUrl = response.url();
+    await saveHttpDownloadIfNeeded(step, response, downloadDir);
+    await assertEffects(step, { beforeUrl, currentUrl: responseUrl });
+    return ok(responseUrl);
+  } catch (cause) {
+    return err(stepExecutionError(step.id, causeMessage(cause)));
+  }
 };
 
-const executePwStepWithHeal = async (
+const executePwStepWithHealResult = async (
   page: Page,
   step: RecipeStep,
   currentUrl: string | undefined,
   llmCommand: string,
-): Promise<{
-  currentUrl: string | undefined;
-  healed: boolean;
-  patchSelectors?: string[];
-}> => {
+): Promise<
+  Result<
+    {
+      currentUrl: string | undefined;
+      healed: boolean;
+      patchSelectors?: string[];
+    },
+    RunExecuteError
+  >
+> => {
   const guardResult = await validateGuards(step, { currentUrl: currentUrl ?? page.url(), page });
   if (guardResult.isErr()) {
     const healed = await tryGuardWithHeal(step, currentUrl ?? page.url(), page);
     if (!healed) {
-      throw new Error(formatStepValidationError(guardResult.error));
+      return err(stepExecutionError(step.id, formatStepValidationError(guardResult.error)));
     }
   }
 
-  try {
-    const newUrl = await executeStep(page, step, currentUrl);
-    return { currentUrl: newUrl, healed: false };
-  } catch (err) {
-    if (step.action !== "click" && step.action !== "fill") {
-      throw err;
-    }
-
-    logHealPhase1Start();
-    const healResult = await healSelector(page, step, llmCommand);
-    if (!healResult.healed) {
-      logHealPhase1Failed();
-      throw err;
-    }
-
-    logHealPhase1Success(healResult.strategy, healResult.newSelectors[0]);
-    const patchedStep: RecipeStep = {
-      ...step,
-      selectorVariants: [...healResult.newSelectors, ...(step.selectorVariants ?? [])],
-    };
-    const newUrl = await executeStep(page, patchedStep, currentUrl);
-    return { currentUrl: newUrl, healed: true, patchSelectors: healResult.newSelectors };
+  const firstRun = await executeStepResult(page, step, currentUrl);
+  if (firstRun.isOk()) {
+    return ok({ currentUrl: firstRun.value, healed: false });
   }
+  if (step.action !== "click" && step.action !== "fill") {
+    return err(firstRun.error);
+  }
+
+  logHealPhase1Start();
+  const healResult = await healSelector(page, step, llmCommand);
+  if (!healResult.healed) {
+    logHealPhase1Failed();
+    return err(firstRun.error);
+  }
+
+  logHealPhase1Success(healResult.strategy, healResult.newSelectors[0]);
+  const patchedStep: RecipeStep = {
+    ...step,
+    selectorVariants: [...healResult.newSelectors, ...(step.selectorVariants ?? [])],
+  };
+  const patchedRun = await executeStepResult(page, patchedStep, currentUrl);
+  if (patchedRun.isErr()) return err(patchedRun.error);
+
+  return ok({
+    currentUrl: patchedRun.value,
+    healed: true,
+    patchSelectors: healResult.newSelectors,
+  });
 };
 
 const runPlanSteps = async (
@@ -544,13 +568,11 @@ const runPlanSteps = async (
 
         try {
           await assertGuards(step, { currentUrl: pageUrl ?? page.url(), page });
-          pageUrl = await executeStep(page, step, pageUrl);
+          const executeResult = await executeStepResult(page, step, pageUrl);
+          if (executeResult.isErr()) return err(executeResult.error);
+          pageUrl = executeResult.value;
         } catch (cause) {
-          return err({
-            kind: "step_execution_failed",
-            stepId: step.id,
-            message: causeMessage(cause),
-          });
+          return err(stepExecutionError(step.id, causeMessage(cause)));
         }
         previousStepMode = "pw";
         continue;
@@ -582,21 +604,15 @@ const runPlanSteps = async (
         }
       }
 
-      try {
-        httpUrl = await runHttpStep(
-          httpContext,
-          step,
-          pageUrl ?? httpUrl,
-          httpUrl ?? pageUrl,
-          downloadDir,
-        );
-      } catch (cause) {
-        return err({
-          kind: "step_execution_failed",
-          stepId: step.id,
-          message: causeMessage(cause),
-        });
-      }
+      const httpStepResult = await runHttpStepResult(
+        httpContext,
+        step,
+        pageUrl ?? httpUrl,
+        httpUrl ?? pageUrl,
+        downloadDir,
+      );
+      if (httpStepResult.isErr()) return err(httpStepResult.error);
+      httpUrl = httpStepResult.value;
       previousStepMode = "http";
     }
 
@@ -675,7 +691,7 @@ const runPlanStepsWithHeal = async (
               maybeStorage ? { storageState: maybeStorage } : undefined,
             );
           }
-          httpUrl = await runHttpStep(
+          const httpStepResult = await runHttpStepResult(
             httpContext,
             step,
             pageUrl ?? httpUrl,
@@ -683,6 +699,11 @@ const runPlanStepsWithHeal = async (
             downloadDir,
             true,
           );
+          if (httpStepResult.isErr()) {
+            logStepFailed(httpStepResult.error.message);
+            return err(httpStepResult.error);
+          }
+          httpUrl = httpStepResult.value;
           previousStepMode = "http";
           logStepOk();
           continue;
@@ -707,23 +728,32 @@ const runPlanStepsWithHeal = async (
         });
       }
 
+      let stepFailure: RunExecuteError | null = null;
       try {
         if (httpContext) {
           await syncHttpCookiesToBrowserContext(context, httpContext);
           await httpContext.dispose();
           httpContext = undefined;
         }
-        const result = await executePwStepWithHeal(page, step, pageUrl, llmCommand);
-        pageUrl = result.currentUrl;
-        if (result.healed && result.patchSelectors) {
-          selectorPatches.set(step.id, result.patchSelectors);
-          healStats.phase1Healed++;
+        const result = await executePwStepWithHealResult(page, step, pageUrl, llmCommand);
+        if (result.isErr()) {
+          stepFailure = result.error;
+        } else {
+          pageUrl = result.value.currentUrl;
+          if (result.value.healed && result.value.patchSelectors) {
+            selectorPatches.set(step.id, result.value.patchSelectors);
+            healStats.phase1Healed++;
+          }
+          previousStepMode = "pw";
+          logStepOk();
+          continue;
         }
-        previousStepMode = "pw";
-        logStepOk();
       } catch (cause) {
-        const message = causeMessage(cause);
-        logStepFailed(message);
+        stepFailure = stepExecutionError(step.id, causeMessage(cause));
+      }
+
+      if (stepFailure) {
+        logStepFailed(stepFailure.message);
 
         logHealPhase2Start(step.title);
         healRecordBuffer.length = 0;
@@ -771,8 +801,8 @@ const runPlanStepsWithHeal = async (
 
         for (const newStep of reNumberedSteps) {
           logStepStart(newStep.id, newStep.title);
-          try {
-            if (newStep.mode === "http") {
+          if (newStep.mode === "http") {
+            try {
               if (!httpContext || previousStepMode !== "http") {
                 if (httpContext) {
                   await httpContext.dispose();
@@ -782,26 +812,47 @@ const runPlanStepsWithHeal = async (
                   maybeStorage ? { storageState: maybeStorage } : undefined,
                 );
               }
-              httpUrl = await runHttpStep(
-                httpContext,
-                newStep,
-                pageUrl ?? httpUrl,
-                httpUrl ?? pageUrl,
-                downloadDir,
-                true,
-              );
-              previousStepMode = "http";
-            } else {
-              if (httpContext) {
-                await syncHttpCookiesToBrowserContext(context, httpContext);
-                await httpContext.dispose();
-                httpContext = undefined;
-              }
-              await assertGuards(newStep, { currentUrl: pageUrl ?? page.url(), page });
-              pageUrl = await executeStep(page, newStep, pageUrl);
-              previousStepMode = "pw";
+            } catch (cause) {
+              const reMessage = causeMessage(cause);
+              logStepFailed(reMessage);
+              return err({
+                kind: "re_record_failed",
+                stepId: step.id,
+                reRecordedStepId: newStep.id,
+                message: reMessage,
+              });
             }
+
+            const httpStepResult = await runHttpStepResult(
+              httpContext,
+              newStep,
+              pageUrl ?? httpUrl,
+              httpUrl ?? pageUrl,
+              downloadDir,
+              true,
+            );
+            if (httpStepResult.isErr()) {
+              logStepFailed(httpStepResult.error.message);
+              return err({
+                kind: "re_record_failed",
+                stepId: step.id,
+                reRecordedStepId: newStep.id,
+                message: httpStepResult.error.message,
+              });
+            }
+            httpUrl = httpStepResult.value;
+            previousStepMode = "http";
             logStepOk();
+            continue;
+          }
+
+          try {
+            if (httpContext) {
+              await syncHttpCookiesToBrowserContext(context, httpContext);
+              await httpContext.dispose();
+              httpContext = undefined;
+            }
+            await assertGuards(newStep, { currentUrl: pageUrl ?? page.url(), page });
           } catch (cause) {
             const reMessage = causeMessage(cause);
             logStepFailed(reMessage);
@@ -812,6 +863,20 @@ const runPlanStepsWithHeal = async (
               message: reMessage,
             });
           }
+
+          const pwStepResult = await executeStepResult(page, newStep, pageUrl);
+          if (pwStepResult.isErr()) {
+            logStepFailed(pwStepResult.error.message);
+            return err({
+              kind: "re_record_failed",
+              stepId: step.id,
+              reRecordedStepId: newStep.id,
+              message: pwStepResult.error.message,
+            });
+          }
+          pageUrl = pwStepResult.value;
+          previousStepMode = "pw";
+          logStepOk();
         }
       }
     }
