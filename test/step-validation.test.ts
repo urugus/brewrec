@@ -87,4 +87,15 @@ describe("step validation", () => {
       expect(formatStepValidationError(result.error)).toMatch(/Effect failed/);
     }
   });
+
+  it("formats unexpected validation error", () => {
+    const message = formatStepValidationError({
+      kind: "unexpected_error",
+      stepId: "s5",
+      phase: "guard",
+      message: "boom",
+    });
+    expect(message).toContain("Unexpected validation error");
+    expect(message).toContain("step=s5");
+  });
 });

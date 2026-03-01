@@ -13,18 +13,34 @@ type EffectContext = {
   page?: Page;
 };
 
-export type StepValidationError = {
-  kind: "guard_failed" | "effect_failed";
-  stepId: string;
-  checkType: string;
-  value: string;
-};
+export type StepValidationError =
+  | {
+      kind: "guard_failed";
+      stepId: string;
+      checkType: Guard["type"];
+      value: string;
+    }
+  | {
+      kind: "effect_failed";
+      stepId: string;
+      checkType: Effect["type"];
+      value: string;
+    }
+  | {
+      kind: "unexpected_error";
+      stepId: string;
+      phase: "guard" | "effect";
+      message: string;
+    };
 
 export const formatStepValidationError = (error: StepValidationError): string => {
   if (error.kind === "guard_failed") {
     return `Guard failed: ${error.checkType}=${error.value} (step=${error.stepId})`;
   }
-  return `Effect failed: ${error.checkType}=${error.value} (step=${error.stepId})`;
+  if (error.kind === "effect_failed") {
+    return `Effect failed: ${error.checkType}=${error.value} (step=${error.stepId})`;
+  }
+  return `Unexpected validation error: phase=${error.phase} (step=${error.stepId}): ${error.message}`;
 };
 
 const guardFailed = (step: RecipeStep, guard: Guard): StepValidationError => {
@@ -42,6 +58,24 @@ const effectFailed = (step: RecipeStep, effect: Effect): StepValidationError => 
     stepId: step.id,
     checkType: effect.type,
     value: effect.value,
+  };
+};
+
+const unknownErrorMessage = (cause: unknown): string => {
+  if (cause instanceof Error) return cause.message;
+  return String(cause);
+};
+
+const unexpectedValidationError = (
+  stepId: string,
+  phase: "guard" | "effect",
+  cause: unknown,
+): StepValidationError => {
+  return {
+    kind: "unexpected_error",
+    stepId,
+    phase,
+    message: unknownErrorMessage(cause),
   };
 };
 
@@ -133,8 +167,8 @@ export const validateGuards = (
 
   for (const guard of step.guards ?? []) {
     result = result.andThen(() =>
-      ResultAsync.fromPromise(evaluateGuard(guard, context), () =>
-        guardFailed(step, guard),
+      ResultAsync.fromPromise(evaluateGuard(guard, context), (cause) =>
+        unexpectedValidationError(step.id, "guard", cause),
       ).andThen((ok) => {
         if (!ok) return errAsync(guardFailed(step, guard));
         return okAsync(undefined);
@@ -153,8 +187,8 @@ export const validateEffects = (
 
   for (const effect of step.effects ?? []) {
     result = result.andThen(() =>
-      ResultAsync.fromPromise(evaluateEffect(effect, context), () =>
-        effectFailed(step, effect),
+      ResultAsync.fromPromise(evaluateEffect(effect, context), (cause) =>
+        unexpectedValidationError(step.id, "effect", cause),
       ).andThen((ok) => {
         if (!ok) return errAsync(effectFailed(step, effect));
         return okAsync(undefined);

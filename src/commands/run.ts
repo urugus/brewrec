@@ -26,9 +26,10 @@ import { injectRecordingCapabilities } from "../core/init-script.js";
 import { loadRecipe, saveRecipe } from "../core/recipe-store.js";
 import { healSelector } from "../core/selector-healer.js";
 import {
+  assertEffects,
+  assertGuards,
   formatStepValidationError,
   matchesUrl,
-  validateEffects,
   validateGuards,
 } from "../core/step-validation.js";
 import { parseCliVariables } from "../core/template-vars.js";
@@ -57,26 +58,6 @@ type HealRunResult = {
     replacedFromStepId: string;
     newSteps: RecipeStep[];
   }>;
-};
-
-const assertGuardsOrThrow = async (
-  step: RecipeStep,
-  context: { currentUrl?: string; page?: Page },
-): Promise<void> => {
-  const guardResult = await validateGuards(step, context);
-  if (guardResult.isErr()) {
-    throw new Error(formatStepValidationError(guardResult.error));
-  }
-};
-
-const assertEffectsOrThrow = async (
-  step: RecipeStep,
-  context: { beforeUrl?: string; currentUrl?: string; page?: Page },
-): Promise<void> => {
-  const effectResult = await validateEffects(step, context);
-  if (effectResult.isErr()) {
-    throw new Error(formatStepValidationError(effectResult.error));
-  }
 };
 
 export const applyPhase2Replacements = (
@@ -191,7 +172,7 @@ const executeStep = async (
   if (step.action === "goto" && step.url) {
     await page.goto(step.url, { waitUntil: "domcontentloaded" });
     const newUrl = page.url();
-    await assertEffectsOrThrow(step, { beforeUrl, currentUrl: newUrl, page });
+    await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
     return newUrl;
   }
 
@@ -203,7 +184,7 @@ const executeStep = async (
     await tryClick(page, selectors);
     await settleAfterAction(page);
     const newUrl = page.url();
-    await assertEffectsOrThrow(step, { beforeUrl, currentUrl: newUrl, page });
+    await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
     return newUrl;
   }
 
@@ -215,7 +196,7 @@ const executeStep = async (
     await tryFill(page, selectors, step.value);
     await settleAfterAction(page);
     const newUrl = page.url();
-    await assertEffectsOrThrow(step, { beforeUrl, currentUrl: newUrl, page });
+    await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
     return newUrl;
   }
 
@@ -223,7 +204,7 @@ const executeStep = async (
     await page.keyboard.press(step.key);
     await settleAfterAction(page);
     const newUrl = page.url();
-    await assertEffectsOrThrow(step, { beforeUrl, currentUrl: newUrl, page });
+    await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
     return newUrl;
   }
 
@@ -414,7 +395,7 @@ const runHttpStep = async (
   });
   const responseUrl = response.url();
   await saveHttpDownloadIfNeeded(step, response, downloadDir);
-  await assertEffectsOrThrow(step, { beforeUrl, currentUrl: responseUrl });
+  await assertEffects(step, { beforeUrl, currentUrl: responseUrl });
   return responseUrl;
 };
 
@@ -488,7 +469,7 @@ const runPlanSteps = async (
           await httpContext.dispose();
           httpContext = undefined;
         }
-        await assertGuardsOrThrow(step, { currentUrl: pageUrl ?? page.url(), page });
+        await assertGuards(step, { currentUrl: pageUrl ?? page.url(), page });
         pageUrl = await executeStep(page, step, pageUrl);
         previousStepMode = "pw";
         continue;
@@ -674,7 +655,7 @@ const runPlanStepsWithHeal = async (
                 await httpContext.dispose();
                 httpContext = undefined;
               }
-              await assertGuardsOrThrow(newStep, { currentUrl: pageUrl ?? page.url(), page });
+              await assertGuards(newStep, { currentUrl: pageUrl ?? page.url(), page });
               pageUrl = await executeStep(page, newStep, pageUrl);
               previousStepMode = "pw";
             }
