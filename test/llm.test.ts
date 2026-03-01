@@ -9,6 +9,7 @@ describe("llm", () => {
     if (result.isErr()) {
       expect(result.error.kind).toBe("command_failed");
       expect(result.error.command).toBe(command);
+      expect(result.error.reason).toBe("spawn_error");
       expect(formatLocalLlmError(result.error)).toContain("LLM command failed");
     }
   });
@@ -16,5 +17,18 @@ describe("llm", () => {
   it("keeps compatibility wrapper behavior on failure", async () => {
     const output = await runLocalClaude("hello", "__browrec_missing_llm_command__");
     expect(output).toBe("");
+  });
+
+  it("redacts raw process message in formatted output", () => {
+    const formatted = formatLocalLlmError({
+      kind: "command_failed",
+      command: "claude",
+      reason: "exit_code",
+      code: 1,
+      signal: undefined,
+    });
+    expect(formatted).toBe("LLM command failed (claude): exit=1");
+    expect(formatted).not.toContain("hello");
+    expect(formatted).not.toContain("-p");
   });
 });
