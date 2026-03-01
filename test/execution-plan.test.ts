@@ -1,5 +1,8 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildExecutionPlan, buildExecutionPlanResult } from "../src/core/execution-plan.js";
+import { vaultPath } from "../src/core/fs.js";
 import type { Recipe } from "../src/types.js";
 
 const baseRecipe = (): Recipe => {
@@ -241,6 +244,35 @@ describe("execution plan", () => {
       expect(result.error.kind).toBe("variable_validation_failed");
       expect(result.error.variableName).toBe("targetDate");
       expect(result.error.message).toMatch(/YYYY-MM-DD/);
+    }
+  });
+
+  it("returns typed error when default secret loader fails", async () => {
+    const recipeId = `broken-vault-${Date.now()}`;
+    const recipe: Recipe = {
+      ...baseRecipe(),
+      id: recipeId,
+      variables: [{ name: "tenant", required: true, resolver: { type: "secret" } }],
+    };
+
+    const file = vaultPath(recipeId);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, "not valid json", "utf-8");
+
+    try {
+      const result = await buildExecutionPlanResult(recipe, {
+        promptRunner: async () => "",
+      });
+      expect(result.isErr()).toBe(true);
+      if (result.isErr()) {
+        expect(result.error.kind).toBe("unexpected_error");
+        if (result.error.kind === "unexpected_error") {
+          expect(result.error.phase).toBe("secret_loader");
+          expect(result.error.message).toMatch(/Secret vault parse failed/);
+        }
+      }
+    } finally {
+      await fs.unlink(file).catch(() => {});
     }
   });
 });
