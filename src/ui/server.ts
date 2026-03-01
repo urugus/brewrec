@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { serve } from "@hono/node-server";
 import open from "open";
-import { PROJECT_ROOT } from "../core/paths.js";
+import { PROJECT_ROOT, PROJECT_ROOT_ENV_NAME } from "../core/paths.js";
 import { _uiInternals } from "./api-app.js";
 
 type FetchApp = {
@@ -21,7 +21,8 @@ const loadBuiltUiApp = async (): Promise<FetchApp> => {
     );
   }
 
-  const moduleUrl = `${pathToFileURL(DIST_UI_ENTRY).href}?t=${Date.now()}`;
+  const moduleUrl = pathToFileURL(DIST_UI_ENTRY).href;
+  process.env[PROJECT_ROOT_ENV_NAME] = PROJECT_ROOT;
   const loaded = (await import(moduleUrl)) as { default?: unknown };
   const app = loaded.default as FetchApp | undefined;
   if (!app || typeof app.fetch !== "function") {

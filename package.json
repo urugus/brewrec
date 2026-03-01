@@ -14,7 +14,7 @@
     "build:ui": "vite build --mode client && vite build",
     "dev": "tsx src/index.ts",
     "dev:ui": "vite --port 4312",
-    "lint": "biome check . && tsc --noEmit",
+    "lint": "biome check . && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.app.json",
     "format": "biome format --write .",
     "test": "vitest run",
     "test:watch": "vitest",

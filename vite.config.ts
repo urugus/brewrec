@@ -16,7 +16,7 @@ export default defineConfig(({ mode }) => {
   if (mode === "client") {
     return {
       define: {
-        "process.env": "process.env",
+        "process.env": JSON.stringify({}),
       },
       plugins: [createHonoxPlugin()],
       build: {
