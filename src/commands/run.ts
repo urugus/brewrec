@@ -39,6 +39,8 @@ import {
 } from "../core/step-validation.js";
 import { formatTemplateVarError, parseCliVariablesResult } from "../core/template-vars.js";
 import type { Recipe, RecipeStep, RecordedEvent } from "../types.js";
+import type { CommandError } from "./result.js";
+import { toCommandError } from "./result.js";
 
 type RunOptions = {
   json?: boolean;
@@ -844,7 +846,7 @@ const runPlanStepsWithHeal = async (
   }
 };
 
-export const runCommand = async (name: string, options: RunOptions): Promise<void> => {
+const runCommandInternal = async (name: string, options: RunOptions): Promise<void> => {
   const recipeResult = await loadRecipeResult(name);
   if (recipeResult.isErr()) {
     throw new Error(formatRecipeStoreError(recipeResult.error));
@@ -953,6 +955,25 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
         warnings: plan.warnings,
       })}\n`,
     );
+  }
+};
+
+export const runCommandResult = async (
+  name: string,
+  options: RunOptions,
+): Promise<Result<void, CommandError>> => {
+  try {
+    await runCommandInternal(name, options);
+    return ok(undefined);
+  } catch (cause) {
+    return err(toCommandError(options.planOnly ? "plan" : "run", cause));
+  }
+};
+
+export const runCommand = async (name: string, options: RunOptions): Promise<void> => {
+  const result = await runCommandResult(name, options);
+  if (result.isErr()) {
+    throw new Error(result.error.message);
   }
 };
 
