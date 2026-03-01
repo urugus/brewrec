@@ -11,7 +11,13 @@ vi.mock("../src/core/keychain.js", () => ({
   setMasterKey: (...args: Parameters<typeof mockSetMasterKey>) => mockSetMasterKey(...args),
 }));
 
-import { _resetKeyCache, loadSecret, saveSecret } from "../src/core/secret-store.js";
+import {
+  _resetKeyCache,
+  formatSecretStoreError,
+  loadSecret,
+  loadSecretResult,
+  saveSecret,
+} from "../src/core/secret-store.js";
 
 const TEST_SECRETS_DIR = path.join(process.cwd(), "secrets");
 const TEST_RECIPE = "test-secret-recipe";
@@ -71,6 +77,17 @@ describe("secret-store", () => {
     await fs.writeFile(vaultFile, "not valid json", "utf-8");
     const result = await loadSecret(TEST_RECIPE, "password");
     expect(result).toBeUndefined();
+  });
+
+  it("returns typed error for corrupted vault in result API", async () => {
+    await fs.mkdir(TEST_SECRETS_DIR, { recursive: true });
+    await fs.writeFile(vaultFile, "not valid json", "utf-8");
+    const result = await loadSecretResult(TEST_RECIPE, "password");
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error.kind).toBe("vault_parse_failed");
+      expect(formatSecretStoreError(result.error)).toMatch(/Secret vault parse failed/);
+    }
   });
 
   it("vault file contains encrypted data, not plaintext", async () => {

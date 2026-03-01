@@ -1,7 +1,7 @@
 import { type Result, err, ok } from "neverthrow";
 import type { Recipe, RecipeStep, RecipeVariable } from "../types.js";
 import { runLocalClaude } from "./llm.js";
-import { loadSecret, saveSecret } from "./secret-store.js";
+import { formatSecretStoreError, loadSecretResult, saveSecretResult } from "./secret-store.js";
 import {
   type TemplateVarError,
   collectStepTemplateTokens,
@@ -196,8 +196,23 @@ export const buildExecutionPlanResult = async (
 ): Promise<Result<ExecutionPlan, BuildExecutionPlanError>> => {
   const now = options.now ?? new Date();
   const promptRunner = options.promptRunner ?? runLocalClaude;
-  const secretLoaderFn = options.secretLoader ?? loadSecret;
-  const secretSaverFn = options.secretSaver ?? saveSecret;
+  const secretLoaderFn =
+    options.secretLoader ??
+    (async (recipeName: string, variableName: string): Promise<string | undefined> => {
+      const result = await loadSecretResult(recipeName, variableName);
+      if (result.isErr()) {
+        throw new Error(formatSecretStoreError(result.error));
+      }
+      return result.value;
+    });
+  const secretSaverFn =
+    options.secretSaver ??
+    (async (recipeName: string, variableName: string, plaintext: string): Promise<void> => {
+      const result = await saveSecretResult(recipeName, variableName, plaintext);
+      if (result.isErr()) {
+        throw new Error(formatSecretStoreError(result.error));
+      }
+    });
   const resolvedVars: Record<string, string> = { ...(options.cliVars ?? {}) };
   const warnings: string[] = [];
   const unresolvedVars = new Set<string>();

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
+import { type Result, err, ok } from "neverthrow";
 import { exists, vaultPath } from "./fs.js";
 import { getMasterKey, setMasterKey } from "./keychain.js";
 import { SECRETS_DIR } from "./paths.js";
@@ -14,6 +15,53 @@ type VaultEntry = {
 type Vault = {
   version: number;
   entries: Record<string, VaultEntry>;
+};
+
+export type SecretStoreError =
+  | {
+      kind: "vault_read_failed";
+      recipeName: string;
+      message: string;
+    }
+  | {
+      kind: "vault_parse_failed";
+      recipeName: string;
+      message: string;
+    }
+  | {
+      kind: "vault_write_failed";
+      recipeName: string;
+      message: string;
+    }
+  | {
+      kind: "derive_key_failed";
+      message: string;
+    }
+  | {
+      kind: "encrypt_failed";
+      variableName: string;
+      message: string;
+    };
+
+export const formatSecretStoreError = (error: SecretStoreError): string => {
+  if (error.kind === "vault_read_failed") {
+    return `Secret vault read failed (${error.recipeName}): ${error.message}`;
+  }
+  if (error.kind === "vault_parse_failed") {
+    return `Secret vault parse failed (${error.recipeName}): ${error.message}`;
+  }
+  if (error.kind === "vault_write_failed") {
+    return `Secret vault write failed (${error.recipeName}): ${error.message}`;
+  }
+  if (error.kind === "derive_key_failed") {
+    return `Secret key derivation failed: ${error.message}`;
+  }
+  return `Secret encrypt failed (${error.variableName}): ${error.message}`;
+};
+
+const causeMessage = (cause: unknown): string => {
+  if (cause instanceof Error) return cause.message;
+  return String(cause);
 };
 
 const ALGORITHM = "aes-256-gcm";
@@ -48,24 +96,36 @@ const legacyDeriveKey = (): Buffer => {
   return deriveKeyFromMaterial(material);
 };
 
-const deriveKey = async (): Promise<Buffer> => {
-  const masterKey = await getOrCreateMasterKey();
-  if (masterKey) {
-    return deriveKeyFromMaterial(masterKey.toString("hex"));
+const deriveKeyResult = async (): Promise<Result<Buffer, SecretStoreError>> => {
+  try {
+    const masterKey = await getOrCreateMasterKey();
+    if (masterKey) {
+      return ok(deriveKeyFromMaterial(masterKey.toString("hex")));
+    }
+    return ok(legacyDeriveKey());
+  } catch (cause) {
+    return err({ kind: "derive_key_failed", message: causeMessage(cause) });
   }
-  return legacyDeriveKey();
 };
 
-const encrypt = (plaintext: string, key: Buffer): VaultEntry => {
-  const iv = crypto.randomBytes(IV_BYTES);
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-  const encrypted = Buffer.concat([cipher.update(plaintext, "utf-8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return {
-    iv: iv.toString("hex"),
-    tag: tag.toString("hex"),
-    ciphertext: encrypted.toString("hex"),
-  };
+const encryptResult = (
+  variableName: string,
+  plaintext: string,
+  key: Buffer,
+): Result<VaultEntry, SecretStoreError> => {
+  try {
+    const iv = crypto.randomBytes(IV_BYTES);
+    const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+    const encrypted = Buffer.concat([cipher.update(plaintext, "utf-8"), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return ok({
+      iv: iv.toString("hex"),
+      tag: tag.toString("hex"),
+      ciphertext: encrypted.toString("hex"),
+    });
+  } catch (cause) {
+    return err({ kind: "encrypt_failed", variableName, message: causeMessage(cause) });
+  }
 };
 
 const decrypt = (entry: VaultEntry, key: Buffer): string => {
@@ -78,53 +138,100 @@ const decrypt = (entry: VaultEntry, key: Buffer): string => {
   return decrypted.toString("utf-8");
 };
 
-const readVault = async (recipeName: string): Promise<Vault> => {
+const readVaultResult = async (recipeName: string): Promise<Result<Vault, SecretStoreError>> => {
   const p = vaultPath(recipeName);
   if (!(await exists(p))) {
-    return { version: 1, entries: {} };
+    return ok({ version: 1, entries: {} });
   }
-  const raw = await fs.readFile(p, "utf-8");
-  return JSON.parse(raw) as Vault;
+
+  let raw = "";
+  try {
+    raw = await fs.readFile(p, "utf-8");
+  } catch (cause) {
+    return err({ kind: "vault_read_failed", recipeName, message: causeMessage(cause) });
+  }
+
+  try {
+    return ok(JSON.parse(raw) as Vault);
+  } catch (cause) {
+    return err({ kind: "vault_parse_failed", recipeName, message: causeMessage(cause) });
+  }
 };
 
-const writeVault = async (recipeName: string, vault: Vault): Promise<void> => {
-  await fs.mkdir(SECRETS_DIR, { recursive: true });
-  await fs.writeFile(vaultPath(recipeName), JSON.stringify(vault, null, 2), "utf-8");
+const writeVaultResult = async (
+  recipeName: string,
+  vault: Vault,
+): Promise<Result<void, SecretStoreError>> => {
+  try {
+    await fs.mkdir(SECRETS_DIR, { recursive: true });
+    await fs.writeFile(vaultPath(recipeName), JSON.stringify(vault, null, 2), "utf-8");
+    return ok(undefined);
+  } catch (cause) {
+    return err({ kind: "vault_write_failed", recipeName, message: causeMessage(cause) });
+  }
+};
+
+export const loadSecretResult = async (
+  recipeName: string,
+  variableName: string,
+): Promise<Result<string | undefined, SecretStoreError>> => {
+  const vaultResult = await readVaultResult(recipeName);
+  if (vaultResult.isErr()) return err(vaultResult.error);
+
+  const vault = vaultResult.value;
+  const entry = vault.entries[variableName];
+  if (!entry) return ok(undefined);
+
+  const keyResult = await deriveKeyResult();
+  if (keyResult.isErr()) return err(keyResult.error);
+  const key = keyResult.value;
+
+  try {
+    return ok(decrypt(entry, key));
+  } catch {
+    // Primary key failed — try legacy key for transparent migration
+    const legacy = legacyDeriveKey();
+    try {
+      const plaintext = decrypt(entry, legacy);
+      // Re-encrypt with new key (best-effort; return plaintext regardless)
+      const encryptedResult = encryptResult(variableName, plaintext, key);
+      if (encryptedResult.isOk()) {
+        vault.entries[variableName] = encryptedResult.value;
+        await writeVaultResult(recipeName, vault);
+      }
+      return ok(plaintext);
+    } catch {
+      return ok(undefined);
+    }
+  }
+};
+
+export const saveSecretResult = async (
+  recipeName: string,
+  variableName: string,
+  plaintext: string,
+): Promise<Result<void, SecretStoreError>> => {
+  const vaultResult = await readVaultResult(recipeName);
+  if (vaultResult.isErr()) return err(vaultResult.error);
+
+  const keyResult = await deriveKeyResult();
+  if (keyResult.isErr()) return err(keyResult.error);
+
+  const encryptedResult = encryptResult(variableName, plaintext, keyResult.value);
+  if (encryptedResult.isErr()) return err(encryptedResult.error);
+
+  const vault = vaultResult.value;
+  vault.entries[variableName] = encryptedResult.value;
+  return writeVaultResult(recipeName, vault);
 };
 
 export const loadSecret = async (
   recipeName: string,
   variableName: string,
 ): Promise<string | undefined> => {
-  try {
-    const vault = await readVault(recipeName);
-    const entry = vault.entries[variableName];
-    if (!entry) return undefined;
-
-    const key = await deriveKey();
-
-    try {
-      return decrypt(entry, key);
-    } catch {
-      // Primary key failed — try legacy key for transparent migration
-      const legacy = legacyDeriveKey();
-      try {
-        const plaintext = decrypt(entry, legacy);
-        // Re-encrypt with new key (best-effort; return plaintext regardless)
-        try {
-          vault.entries[variableName] = encrypt(plaintext, key);
-          await writeVault(recipeName, vault);
-        } catch {
-          // write failure is non-fatal
-        }
-        return plaintext;
-      } catch {
-        return undefined;
-      }
-    }
-  } catch {
-    return undefined;
-  }
+  const result = await loadSecretResult(recipeName, variableName);
+  if (result.isErr()) return undefined;
+  return result.value;
 };
 
 export const saveSecret = async (
@@ -132,10 +239,10 @@ export const saveSecret = async (
   variableName: string,
   plaintext: string,
 ): Promise<void> => {
-  const vault = await readVault(recipeName);
-  const key = await deriveKey();
-  vault.entries[variableName] = encrypt(plaintext, key);
-  await writeVault(recipeName, vault);
+  const result = await saveSecretResult(recipeName, variableName, plaintext);
+  if (result.isErr()) {
+    throw new Error(formatSecretStoreError(result.error));
+  }
 };
 
 /** @internal — reset cached master key (for tests) */
