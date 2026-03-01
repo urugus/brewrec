@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { type Result, err, ok } from "neverthrow";
 import { chromium, request } from "playwright";
 import type { APIRequestContext, BrowserContext, Page } from "playwright";
 import {
@@ -62,6 +63,55 @@ type HealRunResult = {
     replacedFromStepId: string;
     newSteps: RecipeStep[];
   }>;
+};
+
+type RunExecuteError =
+  | {
+      kind: "context_unavailable";
+      stepId: string;
+      message: string;
+    }
+  | {
+      kind: "step_execution_failed";
+      stepId: string;
+      message: string;
+    }
+  | {
+      kind: "heal_record_failed";
+      stepId: string;
+      message: string;
+    }
+  | {
+      kind: "re_record_failed";
+      stepId: string;
+      reRecordedStepId: string;
+      message: string;
+    }
+  | {
+      kind: "unexpected_error";
+      phase: "run" | "run_heal";
+      message: string;
+    };
+
+const formatRunExecuteError = (error: RunExecuteError): string => {
+  if (error.kind === "context_unavailable") {
+    return error.message;
+  }
+  if (error.kind === "step_execution_failed") {
+    return `Step ${error.stepId} failed: ${error.message}`;
+  }
+  if (error.kind === "heal_record_failed") {
+    return `Healing failed for step ${error.stepId}: ${error.message}`;
+  }
+  if (error.kind === "re_record_failed") {
+    return `Re-recorded step ${error.reRecordedStepId} failed: ${error.message}`;
+  }
+  return `Run execution failed (${error.phase}): ${error.message}`;
+};
+
+const causeMessage = (cause: unknown): string => {
+  if (cause instanceof Error) return cause.message;
+  return String(cause);
 };
 
 export const applyPhase2Replacements = (
@@ -449,62 +499,126 @@ const executePwStepWithHeal = async (
 const runPlanSteps = async (
   steps: RecipeStep[],
   downloadDir: string,
-): Promise<string | undefined> => {
+): Promise<Result<string | undefined, RunExecuteError>> => {
   const hasPwStep = steps.some((step) => step.mode === "pw");
-  const browser = hasPwStep ? await chromium.launch({ headless: true }) : null;
-  const pwContext = browser ? await browser.newContext({ acceptDownloads: true }) : null;
-  const page = pwContext ? await pwContext.newPage() : null;
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
+  let pwContext: BrowserContext | null = null;
+  let page: Page | null = null;
   let httpContext: APIRequestContext | undefined;
-  if (page) {
-    setupDownloadHandler(page, downloadDir);
-  }
 
   try {
+    if (hasPwStep) {
+      browser = await chromium.launch({ headless: true });
+      pwContext = await browser.newContext({ acceptDownloads: true });
+      page = await pwContext.newPage();
+      setupDownloadHandler(page, downloadDir);
+    }
+
     let pageUrl: string | undefined;
     let httpUrl: string | undefined;
     let previousStepMode: RecipeStep["mode"] | undefined;
     for (const step of steps) {
       if (step.mode === "pw") {
         if (!page) {
-          throw new Error(`Playwright page is not available for step ${step.id}`);
+          return err({
+            kind: "context_unavailable",
+            stepId: step.id,
+            message: `Playwright page is not available for step ${step.id}`,
+          });
         }
         if (httpContext) {
-          await syncHttpCookiesToBrowserContext(pwContext, httpContext);
-          await httpContext.dispose();
-          httpContext = undefined;
+          try {
+            await syncHttpCookiesToBrowserContext(pwContext, httpContext);
+            await httpContext.dispose();
+            httpContext = undefined;
+          } catch (cause) {
+            return err({
+              kind: "step_execution_failed",
+              stepId: step.id,
+              message: causeMessage(cause),
+            });
+          }
         }
-        await assertGuards(step, { currentUrl: pageUrl ?? page.url(), page });
-        pageUrl = await executeStep(page, step, pageUrl);
+
+        try {
+          await assertGuards(step, { currentUrl: pageUrl ?? page.url(), page });
+          pageUrl = await executeStep(page, step, pageUrl);
+        } catch (cause) {
+          return err({
+            kind: "step_execution_failed",
+            stepId: step.id,
+            message: causeMessage(cause),
+          });
+        }
         previousStepMode = "pw";
         continue;
       }
 
       if (!httpContext || previousStepMode !== "http") {
         if (httpContext) {
-          await httpContext.dispose();
+          try {
+            await httpContext.dispose();
+          } catch (cause) {
+            return err({
+              kind: "step_execution_failed",
+              stepId: step.id,
+              message: causeMessage(cause),
+            });
+          }
         }
-        const maybeStorage = pwContext ? await pwContext.storageState() : undefined;
-        httpContext = await request.newContext(
-          maybeStorage ? { storageState: maybeStorage } : undefined,
-        );
+        try {
+          const maybeStorage = pwContext ? await pwContext.storageState() : undefined;
+          httpContext = await request.newContext(
+            maybeStorage ? { storageState: maybeStorage } : undefined,
+          );
+        } catch (cause) {
+          return err({
+            kind: "step_execution_failed",
+            stepId: step.id,
+            message: causeMessage(cause),
+          });
+        }
       }
-      httpUrl = await runHttpStep(
-        httpContext,
-        step,
-        pageUrl ?? httpUrl,
-        httpUrl ?? pageUrl,
-        downloadDir,
-      );
+
+      try {
+        httpUrl = await runHttpStep(
+          httpContext,
+          step,
+          pageUrl ?? httpUrl,
+          httpUrl ?? pageUrl,
+          downloadDir,
+        );
+      } catch (cause) {
+        return err({
+          kind: "step_execution_failed",
+          stepId: step.id,
+          message: causeMessage(cause),
+        });
+      }
       previousStepMode = "http";
     }
 
-    return pageUrl ?? httpUrl ?? page?.url();
+    return ok(pageUrl ?? httpUrl ?? page?.url());
+  } catch (cause) {
+    return err({
+      kind: "unexpected_error",
+      phase: "run",
+      message: causeMessage(cause),
+    });
   } finally {
     if (httpContext) {
-      await httpContext.dispose();
+      try {
+        await httpContext.dispose();
+      } catch {
+        // noop
+      }
     }
     if (browser) {
-      await browser.close();
+      try {
+        await browser.close();
+      } catch {
+        // noop
+      }
     }
   }
 };
@@ -513,27 +627,31 @@ const runPlanStepsWithHeal = async (
   steps: RecipeStep[],
   llmCommand: string,
   downloadDir: string,
-): Promise<HealRunResult> => {
+): Promise<Result<HealRunResult, RunExecuteError>> => {
   const healStats: HealStats = { phase1Healed: 0, phase2ReRecorded: 0 };
   const selectorPatches = new Map<string, string[]>();
   const phase2Replacements: HealRunResult["phase2Replacements"] = [];
 
   const hasPwStep = steps.some((step) => step.mode === "pw");
-  const browser = hasPwStep ? await chromium.launch({ headless: false }) : null;
-  const context = browser ? await browser.newContext({ acceptDownloads: true }) : null;
-  const page = context ? await context.newPage() : null;
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
+  let context: BrowserContext | null = null;
+  let page: Page | null = null;
   let httpContext: APIRequestContext | undefined;
 
   try {
+    if (hasPwStep) {
+      browser = await chromium.launch({ headless: false });
+      context = await browser.newContext({ acceptDownloads: true });
+      page = await context.newPage();
+      setupDownloadHandler(page, downloadDir);
+    }
+
     const healRecordBuffer: RecordedEvent[] = [];
     let isRecording = false;
     if (context) {
       await injectRecordingCapabilities(context, async (_page, event) => {
         if (isRecording) healRecordBuffer.push(event);
       });
-    }
-    if (page) {
-      setupDownloadHandler(page, downloadDir);
     }
 
     let pageUrl: string | undefined;
@@ -566,16 +684,25 @@ const runPlanStepsWithHeal = async (
           previousStepMode = "http";
           logStepOk();
           continue;
-        } catch (err) {
-          logStepFailed((err as Error).message);
-          throw err;
+        } catch (cause) {
+          const message = causeMessage(cause);
+          logStepFailed(message);
+          return err({
+            kind: "step_execution_failed",
+            stepId: step.id,
+            message,
+          });
         }
       }
 
       if (!page) {
-        const noPageErr = new Error(`Playwright page is not available for step ${step.id}`);
-        logStepFailed(noPageErr.message);
-        throw noPageErr;
+        const message = `Playwright page is not available for step ${step.id}`;
+        logStepFailed(message);
+        return err({
+          kind: "context_unavailable",
+          stepId: step.id,
+          message,
+        });
       }
 
       try {
@@ -592,8 +719,9 @@ const runPlanStepsWithHeal = async (
         }
         previousStepMode = "pw";
         logStepOk();
-      } catch (err) {
-        logStepFailed((err as Error).message);
+      } catch (cause) {
+        const message = causeMessage(cause);
+        logStepFailed(message);
 
         logHealPhase2Start(step.title);
         healRecordBuffer.length = 0;
@@ -604,7 +732,11 @@ const runPlanStepsWithHeal = async (
         isRecording = false;
 
         if (healRecordBuffer.length === 0) {
-          throw new Error(`Healing failed for step ${step.id}: no user actions recorded`);
+          return err({
+            kind: "heal_record_failed",
+            stepId: step.id,
+            message: "no user actions recorded",
+          });
         }
 
         const userEvents = healRecordBuffer.filter(
@@ -616,7 +748,11 @@ const runPlanStepsWithHeal = async (
         );
         const newSteps = eventsToSteps(userEvents);
         if (newSteps.length === 0) {
-          throw new Error(`Healing failed for step ${step.id}: no executable steps recorded`);
+          return err({
+            kind: "heal_record_failed",
+            stepId: step.id,
+            message: "no executable steps recorded",
+          });
         }
         const reNumberedSteps = newSteps.map((s, idx) => ({
           ...s,
@@ -664,26 +800,46 @@ const runPlanStepsWithHeal = async (
               previousStepMode = "pw";
             }
             logStepOk();
-          } catch (reErr) {
-            logStepFailed((reErr as Error).message);
-            throw new Error(`Re-recorded step ${newStep.id} failed: ${(reErr as Error).message}`);
+          } catch (cause) {
+            const reMessage = causeMessage(cause);
+            logStepFailed(reMessage);
+            return err({
+              kind: "re_record_failed",
+              stepId: step.id,
+              reRecordedStepId: newStep.id,
+              message: reMessage,
+            });
           }
         }
       }
     }
 
-    return {
+    return ok({
       lastUrl: pageUrl ?? httpUrl ?? page?.url(),
       healStats,
       selectorPatches,
       phase2Replacements,
-    };
+    });
+  } catch (cause) {
+    return err({
+      kind: "unexpected_error",
+      phase: "run_heal",
+      message: causeMessage(cause),
+    });
   } finally {
     if (httpContext) {
-      await httpContext.dispose();
+      try {
+        await httpContext.dispose();
+      } catch {
+        // noop
+      }
     }
     if (browser) {
-      await browser.close();
+      try {
+        await browser.close();
+      } catch {
+        // noop
+      }
     }
   }
 };
@@ -741,13 +897,16 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
   let executedVersion = recipe.version;
 
   if (options.heal) {
-    const result = await runPlanStepsWithHeal(
+    const runResult = await runPlanStepsWithHeal(
       plan.steps,
       options.llmCommand ?? "claude",
       downloadDir,
     );
+    if (runResult.isErr()) {
+      throw new Error(formatRunExecuteError(runResult.error));
+    }
 
-    const { healStats, selectorPatches, phase2Replacements } = result;
+    const { healStats, selectorPatches, phase2Replacements } = runResult.value;
     if (healStats.phase1Healed > 0 || healStats.phase2ReRecorded > 0) {
       let mergedSteps = recipe.steps.map((s) => {
         const newSelectors = selectorPatches.get(s.id);
@@ -777,7 +936,10 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
       logHealSummary(healStats.phase1Healed, healStats.phase2ReRecorded);
     }
   } else {
-    await runPlanSteps(plan.steps, downloadDir);
+    const runResult = await runPlanSteps(plan.steps, downloadDir);
+    if (runResult.isErr()) {
+      throw new Error(formatRunExecuteError(runResult.error));
+    }
   }
 
   if (options.json) {
@@ -803,4 +965,5 @@ export const _runInternals = {
   parseContentDispositionFilename,
   extensionFromContentType,
   applyPhase2Replacements,
+  formatRunExecuteError,
 };
