@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import { type Result, err, ok } from "neverthrow";
 import { exists, vaultPath } from "./fs.js";
-import { getMasterKey, setMasterKey } from "./keychain.js";
+import { getMasterKeyResult, setMasterKeyResult } from "./keychain.js";
 import { SECRETS_DIR } from "./paths.js";
 
 type VaultEntry = {
@@ -94,11 +94,12 @@ let cachedMasterKey: Buffer | null | undefined;
 const getOrCreateMasterKey = async (): Promise<Buffer | null> => {
   if (cachedMasterKey !== undefined) return cachedMasterKey;
 
-  let masterKey = await getMasterKey();
+  const masterKeyResult = await getMasterKeyResult();
+  let masterKey = masterKeyResult.isOk() ? masterKeyResult.value : null;
   if (!masterKey) {
     const newKey = crypto.randomBytes(KEY_LENGTH);
-    const stored = await setMasterKey(newKey);
-    if (stored) {
+    const setResult = await setMasterKeyResult(newKey);
+    if (setResult.isOk()) {
       masterKey = newKey;
     }
   }

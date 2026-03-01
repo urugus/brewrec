@@ -2,14 +2,17 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { err, ok } from "neverthrow";
 import { type Mock, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockGetMasterKey = vi.fn<() => Promise<Buffer | null>>();
-const mockSetMasterKey = vi.fn<(key: Buffer) => Promise<boolean>>();
+const mockGetMasterKeyResult = vi.fn<() => Promise<unknown>>();
+const mockSetMasterKeyResult = vi.fn<(key: Buffer) => Promise<unknown>>();
 
 vi.mock("../src/core/keychain.js", () => ({
-  getMasterKey: (...args: Parameters<typeof mockGetMasterKey>) => mockGetMasterKey(...args),
-  setMasterKey: (...args: Parameters<typeof mockSetMasterKey>) => mockSetMasterKey(...args),
+  getMasterKeyResult: (...args: Parameters<typeof mockGetMasterKeyResult>) =>
+    mockGetMasterKeyResult(...args),
+  setMasterKeyResult: (...args: Parameters<typeof mockSetMasterKeyResult>) =>
+    mockSetMasterKeyResult(...args),
 }));
 
 import { vaultPath } from "../src/core/fs.js";
@@ -39,8 +42,10 @@ describe("secret-store", () => {
     vi.clearAllMocks();
     _resetKeyCache();
     // Default: keychain unavailable → legacy fallback
-    mockGetMasterKey.mockResolvedValue(null);
-    mockSetMasterKey.mockResolvedValue(false);
+    mockGetMasterKeyResult.mockResolvedValue(ok(null));
+    mockSetMasterKeyResult.mockResolvedValue(
+      err({ kind: "unsupported_platform", platform: "linux" }),
+    );
   });
   afterEach(cleanup);
 
@@ -130,8 +135,10 @@ describe("secret-store", () => {
 
   it("returns derive_key_failed from saveSecretResult when legacy key derivation fails", async () => {
     _resetKeyCache();
-    mockGetMasterKey.mockResolvedValue(null);
-    mockSetMasterKey.mockResolvedValue(false);
+    mockGetMasterKeyResult.mockResolvedValue(ok(null));
+    mockSetMasterKeyResult.mockResolvedValue(
+      err({ kind: "unsupported_platform", platform: "linux" }),
+    );
     const userInfoSpy = vi.spyOn(os, "userInfo").mockImplementation(() => {
       throw new Error("user unavailable");
     });
@@ -163,8 +170,8 @@ describe("secret-store", () => {
 
     beforeEach(() => {
       _resetKeyCache();
-      mockGetMasterKey.mockResolvedValue(FAKE_MASTER_KEY);
-      mockSetMasterKey.mockResolvedValue(true);
+      mockGetMasterKeyResult.mockResolvedValue(ok(FAKE_MASTER_KEY));
+      mockSetMasterKeyResult.mockResolvedValue(ok(undefined));
     });
 
     it("encrypts and decrypts using keychain-derived key", async () => {
@@ -180,7 +187,7 @@ describe("secret-store", () => {
 
       // Now save with legacy (keychain unavailable)
       _resetKeyCache();
-      mockGetMasterKey.mockResolvedValue(null);
+      mockGetMasterKeyResult.mockResolvedValue(ok(null));
       await cleanup();
       await saveSecret(TEST_RECIPE, "password", "test-value");
       const legacyRaw = await fs.readFile(vaultFile, "utf-8");
@@ -203,8 +210,8 @@ describe("secret-store", () => {
       // Step 2: Enable keychain and load — should trigger migration
       _resetKeyCache();
       const masterKey = crypto.randomBytes(32);
-      mockGetMasterKey.mockResolvedValue(masterKey);
-      mockSetMasterKey.mockResolvedValue(true);
+      mockGetMasterKeyResult.mockResolvedValue(ok(masterKey));
+      mockSetMasterKeyResult.mockResolvedValue(ok(undefined));
 
       const result = await loadSecret(TEST_RECIPE, "password");
       expect(result).toBe("migrate-me");
@@ -223,12 +230,12 @@ describe("secret-store", () => {
   describe("master key generation", () => {
     it("generates and stores a new key on first use", async () => {
       _resetKeyCache();
-      mockGetMasterKey.mockResolvedValue(null);
-      mockSetMasterKey.mockResolvedValue(true);
+      mockGetMasterKeyResult.mockResolvedValue(ok(null));
+      mockSetMasterKeyResult.mockResolvedValue(ok(undefined));
 
       await saveSecret(TEST_RECIPE, "password", "first-use");
-      expect(mockSetMasterKey).toHaveBeenCalledTimes(1);
-      const storedKey = mockSetMasterKey.mock.calls[0][0];
+      expect(mockSetMasterKeyResult).toHaveBeenCalledTimes(1);
+      const storedKey = mockSetMasterKeyResult.mock.calls[0][0];
       expect(storedKey).toBeInstanceOf(Buffer);
       expect(storedKey.length).toBe(32);
     });
@@ -236,14 +243,14 @@ describe("secret-store", () => {
     it("caches master key within process", async () => {
       _resetKeyCache();
       const masterKey = crypto.randomBytes(32);
-      mockGetMasterKey.mockResolvedValue(masterKey);
+      mockGetMasterKeyResult.mockResolvedValue(ok(masterKey));
 
       await saveSecret(TEST_RECIPE, "password", "value1");
       await saveSecret(TEST_RECIPE, "email", "value2");
       await loadSecret(TEST_RECIPE, "password");
 
       // getMasterKey should be called only once despite multiple operations
-      expect(mockGetMasterKey).toHaveBeenCalledTimes(1);
+      expect(mockGetMasterKeyResult).toHaveBeenCalledTimes(1);
     });
   });
 });
