@@ -1,7 +1,7 @@
 import { eventsToCompileResult } from "../core/compile-heuristic.js";
 import { applyCredentialVariables } from "../core/credential-vars.js";
 import { exists, recipePath } from "../core/fs.js";
-import { runLocalClaude } from "../core/llm.js";
+import { formatLocalLlmError, runLocalClaudeResult } from "../core/llm.js";
 import { loadRecipe, saveRecipe } from "../core/recipe-store.js";
 import { readRecordedEvents } from "../core/record-store.js";
 import type { Recipe, RecordedEvent } from "../types.js";
@@ -24,7 +24,12 @@ export const compileCommand = async (name: string, options: CompileOptions): Pro
   const { steps: rawSteps, stats } = eventsToCompileResult(events);
   const { steps, variables: secretVars } = applyCredentialVariables(rawSteps, events);
 
-  const llmSummary = await runLocalClaude(buildPrompt(events), options.llmCommand);
+  const llmSummaryResult = await runLocalClaudeResult(buildPrompt(events), options.llmCommand);
+  const llmSummary = llmSummaryResult.isOk() ? llmSummaryResult.value : "";
+  if (llmSummaryResult.isErr()) {
+    process.stderr.write(`LLM summary skipped: ${formatLocalLlmError(llmSummaryResult.error)}\n`);
+  }
+
   const p = recipePath(name);
 
   let version = 1;

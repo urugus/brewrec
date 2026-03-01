@@ -1,6 +1,6 @@
 import type { Page } from "playwright";
 import type { RecipeStep } from "../types.js";
-import { runLocalClaude } from "./llm.js";
+import { formatLocalLlmError, runLocalClaudeResult } from "./llm.js";
 
 export type SelectorHints = {
   placeholder?: string;
@@ -164,7 +164,14 @@ const tryLlmHeal = async (
     .filter(Boolean)
     .join("\n");
 
-  const response = await runLocalClaude(prompt, llmCommand);
+  const responseResult = await runLocalClaudeResult(prompt, llmCommand);
+  if (responseResult.isErr()) {
+    process.stderr.write(
+      `[Heal] LLM selector suggestion failed: ${formatLocalLlmError(responseResult.error)}\n`,
+    );
+    return { healed: false, newSelectors: [], strategy: "" };
+  }
+  const response = responseResult.value;
   if (!response) return { healed: false, newSelectors: [], strategy: "" };
 
   const candidates = parseSelectorsFromLlmResponse(response);
