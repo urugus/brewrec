@@ -963,50 +963,68 @@ const runCommandInternal = async (name: string, options: RunOptions): Promise<vo
   const downloadDir = await resolveDownloadDir(name, recipe.downloadDir);
   let executedVersion = recipe.version;
 
-  if (options.heal) {
-    const runResult = await runPlanStepsWithHeal(
-      plan.steps,
-      options.llmCommand ?? "claude",
-      downloadDir,
-    );
-    if (runResult.isErr()) {
-      throw new Error(formatRunExecuteError(runResult.error));
-    }
-
-    const { healStats, selectorPatches, phase2Replacements } = runResult.value;
-    if (healStats.phase1Healed > 0 || healStats.phase2ReRecorded > 0) {
-      let mergedSteps = recipe.steps.map((s) => {
-        const newSelectors = selectorPatches.get(s.id);
-        if (newSelectors) {
-          return { ...s, selectorVariants: [...newSelectors, ...(s.selectorVariants ?? [])] };
-        }
-        return s;
-      });
-
-      mergedSteps = applyPhase2Replacements(mergedSteps, phase2Replacements);
-
-      const healed: Recipe = {
-        ...recipe,
-        version: recipe.version + 1,
-        updatedAt: new Date().toISOString(),
-        source: "healed",
-        steps: mergedSteps,
-        notes:
-          `${recipe.notes ?? ""}\nSelf-healed: ${healStats.phase1Healed} auto-fixed, ${healStats.phase2ReRecorded} re-recorded.`.trim(),
-      };
-      const saveResult = await saveRecipeResult(healed);
-      if (saveResult.isErr()) {
-        throw new Error(formatRecipeStoreError(saveResult.error));
+  try {
+    if (options.heal) {
+      const runResult = await runPlanStepsWithHeal(
+        plan.steps,
+        options.llmCommand ?? "claude",
+        downloadDir,
+      );
+      if (runResult.isErr()) {
+        throw new Error(formatRunExecuteError(runResult.error));
       }
-      executedVersion = healed.version;
-      logRecipeSaved(name, healed.version);
-      logHealSummary(healStats.phase1Healed, healStats.phase2ReRecorded);
+
+      const { healStats, selectorPatches, phase2Replacements } = runResult.value;
+      if (healStats.phase1Healed > 0 || healStats.phase2ReRecorded > 0) {
+        let mergedSteps = recipe.steps.map((s) => {
+          const newSelectors = selectorPatches.get(s.id);
+          if (newSelectors) {
+            return { ...s, selectorVariants: [...newSelectors, ...(s.selectorVariants ?? [])] };
+          }
+          return s;
+        });
+
+        mergedSteps = applyPhase2Replacements(mergedSteps, phase2Replacements);
+
+        const healed: Recipe = {
+          ...recipe,
+          version: recipe.version + 1,
+          updatedAt: new Date().toISOString(),
+          source: "healed",
+          steps: mergedSteps,
+          notes:
+            `${recipe.notes ?? ""}\nSelf-healed: ${healStats.phase1Healed} auto-fixed, ${healStats.phase2ReRecorded} re-recorded.`.trim(),
+        };
+        const saveResult = await saveRecipeResult(healed);
+        if (saveResult.isErr()) {
+          throw new Error(formatRecipeStoreError(saveResult.error));
+        }
+        executedVersion = healed.version;
+        logRecipeSaved(name, healed.version);
+        logHealSummary(healStats.phase1Healed, healStats.phase2ReRecorded);
+      }
+    } else {
+      const runResult = await runPlanSteps(plan.steps, downloadDir);
+      if (runResult.isErr()) {
+        throw new Error(formatRunExecuteError(runResult.error));
+      }
     }
-  } else {
-    const runResult = await runPlanSteps(plan.steps, downloadDir);
-    if (runResult.isErr()) {
-      throw new Error(formatRunExecuteError(runResult.error));
+  } catch (cause) {
+    const message = causeMessage(cause);
+    if (options.json) {
+      process.stdout.write(
+        `${JSON.stringify({
+          name,
+          version: executedVersion,
+          ok: false,
+          phase: "execute",
+          error: message,
+          resolvedVars: plan.resolvedVars,
+          warnings: plan.warnings,
+        })}\n`,
+      );
     }
+    throw new Error(message);
   }
 
   if (options.json) {
