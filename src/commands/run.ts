@@ -23,7 +23,11 @@ import {
   logStepStart,
 } from "../core/heal-logger.js";
 import { injectRecordingCapabilities } from "../core/init-script.js";
-import { loadRecipe, saveRecipe } from "../core/recipe-store.js";
+import {
+  formatRecipeStoreError,
+  loadRecipeResult,
+  saveRecipeResult,
+} from "../core/recipe-store.js";
 import { healSelector } from "../core/selector-healer.js";
 import {
   assertEffects,
@@ -685,7 +689,11 @@ const runPlanStepsWithHeal = async (
 };
 
 export const runCommand = async (name: string, options: RunOptions): Promise<void> => {
-  const recipe = await loadRecipe(name);
+  const recipeResult = await loadRecipeResult(name);
+  if (recipeResult.isErr()) {
+    throw new Error(formatRecipeStoreError(recipeResult.error));
+  }
+  const recipe = recipeResult.value;
   const cliVarsResult = parseCliVariablesResult(options.vars ?? []);
   if (cliVarsResult.isErr()) {
     const message = formatTemplateVarError(cliVarsResult.error);
@@ -760,7 +768,10 @@ export const runCommand = async (name: string, options: RunOptions): Promise<voi
         notes:
           `${recipe.notes ?? ""}\nSelf-healed: ${healStats.phase1Healed} auto-fixed, ${healStats.phase2ReRecorded} re-recorded.`.trim(),
       };
-      await saveRecipe(healed);
+      const saveResult = await saveRecipeResult(healed);
+      if (saveResult.isErr()) {
+        throw new Error(formatRecipeStoreError(saveResult.error));
+      }
       executedVersion = healed.version;
       logRecipeSaved(name, healed.version);
       logHealSummary(healStats.phase1Healed, healStats.phase2ReRecorded);

@@ -3,7 +3,12 @@ import path from "node:path";
 import express from "express";
 import open from "open";
 import { PUBLIC_DIR } from "../core/paths.js";
-import { listRecipes, loadRecipe, saveRecipe } from "../core/recipe-store.js";
+import {
+  formatRecipeStoreError,
+  listRecipesResult,
+  loadRecipeResult,
+  saveRecipeResult,
+} from "../core/recipe-store.js";
 import type { Recipe } from "../types.js";
 
 const isObject = (value: unknown): value is Record<string, unknown> => {
@@ -148,7 +153,12 @@ export const startUiServer = async (port = 4312): Promise<void> => {
   app.use(express.static(PUBLIC_DIR));
 
   app.get("/api/recipes", async (_req, res) => {
-    const recipes = await listRecipes();
+    const result = await listRecipesResult();
+    if (result.isErr()) {
+      res.status(500).json({ error: formatRecipeStoreError(result.error) });
+      return;
+    }
+    const recipes = result.value;
     res.json(
       recipes.map((r) => ({
         id: r.id,
@@ -160,35 +170,39 @@ export const startUiServer = async (port = 4312): Promise<void> => {
   });
 
   app.get("/api/recipes/:id", async (req, res) => {
-    try {
-      const recipe = await loadRecipe(req.params.id);
-      res.json(recipe);
-    } catch {
-      res.status(404).json({ error: "recipe not found" });
+    const result = await loadRecipeResult(req.params.id);
+    if (result.isErr()) {
+      if (result.error.kind === "recipe_read_failed") {
+        res.status(404).json({ error: "recipe not found" });
+        return;
+      }
+      res.status(500).json({ error: formatRecipeStoreError(result.error) });
+      return;
     }
+    res.json(result.value);
   });
 
   app.put("/api/recipes/:id", async (req, res) => {
-    try {
-      const body = req.body;
-      if (!isObject(body) || typeof body.id !== "string") {
-        res.status(400).json({ error: "invalid recipe payload" });
-        return;
-      }
-      if (body.id !== req.params.id) {
-        res.status(400).json({ error: "recipe id mismatch" });
-        return;
-      }
-      if (!isValidRecipe(body)) {
-        res.status(400).json({ error: "invalid recipe payload" });
-        return;
-      }
-
-      await saveRecipe(body);
-      res.json({ ok: true });
-    } catch {
+    const body = req.body;
+    if (!isObject(body) || typeof body.id !== "string") {
       res.status(400).json({ error: "invalid recipe payload" });
+      return;
     }
+    if (body.id !== req.params.id) {
+      res.status(400).json({ error: "recipe id mismatch" });
+      return;
+    }
+    if (!isValidRecipe(body)) {
+      res.status(400).json({ error: "invalid recipe payload" });
+      return;
+    }
+
+    const saveResult = await saveRecipeResult(body);
+    if (saveResult.isErr()) {
+      res.status(500).json({ error: formatRecipeStoreError(saveResult.error) });
+      return;
+    }
+    res.json({ ok: true });
   });
 
   app.get("/api/health", (_req, res) => {

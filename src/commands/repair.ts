@@ -1,7 +1,15 @@
-import { loadRecipe, saveRecipe } from "../core/recipe-store.js";
+import {
+  formatRecipeStoreError,
+  loadRecipeResult,
+  saveRecipeResult,
+} from "../core/recipe-store.js";
 
 export const repairCommand = async (name: string): Promise<void> => {
-  const recipe = await loadRecipe(name);
+  const recipeResult = await loadRecipeResult(name);
+  if (recipeResult.isErr()) {
+    throw new Error(formatRecipeStoreError(recipeResult.error));
+  }
+  const recipe = recipeResult.value;
 
   const patched = {
     ...recipe,
@@ -15,5 +23,8 @@ export const repairCommand = async (name: string): Promise<void> => {
     })),
   };
 
-  await saveRecipe(patched);
+  const saveResult = await saveRecipeResult(patched);
+  if (saveResult.isErr()) {
+    throw new Error(formatRecipeStoreError(saveResult.error));
+  }
 };
