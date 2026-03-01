@@ -1,38 +1,61 @@
-import type { Response } from "express";
 import type { ProgressEvent, ProgressReporter } from "../services/progress.js";
 
-export const initSse = (res: Response): void => {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-  try {
-    if (!res.writableEnded && !res.destroyed) {
-      res.write(":\n\n");
-    }
-  } catch {
-    // client already disconnected
-  }
+export type SseConnection = {
+  close: () => Promise<void>;
+  response: Response;
+  send: (event: string, data: unknown) => void;
 };
 
-export const sendSseEvent = (res: Response, event: string, data: unknown): void => {
-  if (res.writableEnded || res.destroyed) return;
-  try {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  } catch {
-    // client already disconnected
-  }
+const SSE_HEADERS: Record<string, string> = {
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  Connection: "keep-alive",
 };
 
-export const endSse = (res: Response): void => {
-  if (!res.writableEnded && !res.destroyed) {
-    res.end();
-  }
+const encoder = new TextEncoder();
+
+export const createSseConnection = (): SseConnection => {
+  const stream = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = stream.writable.getWriter();
+
+  let closed = false;
+  let writeQueue: Promise<void> = Promise.resolve();
+
+  const enqueue = (chunk: string): void => {
+    if (closed) return;
+
+    writeQueue = writeQueue
+      .then(async () => {
+        if (closed) return;
+        await writer.write(encoder.encode(chunk));
+      })
+      .catch(() => {
+        closed = true;
+      });
+  };
+
+  enqueue(":\n\n");
+
+  return {
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      await writeQueue.catch(() => undefined);
+      await writer.close().catch(() => undefined);
+    },
+    response: new Response(stream.readable, { headers: SSE_HEADERS }),
+    send: (event: string, data: unknown) => {
+      enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    },
+  };
 };
 
-export const sseReporter = (res: Response): ProgressReporter => {
+export const sendSseEvent = (connection: SseConnection, event: string, data: unknown): void => {
+  connection.send(event, data);
+};
+
+export const sseReporter = (connection: SseConnection): ProgressReporter => {
   return (event: ProgressEvent) => {
-    sendSseEvent(res, "progress", event);
+    sendSseEvent(connection, "progress", event);
   };
 };

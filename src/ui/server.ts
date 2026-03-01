@@ -1,8 +1,7 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import express from "express";
+import { serve } from "@hono/node-server";
+import { Hono } from "hono";
+import { jsxRenderer } from "hono/jsx-renderer";
 import open from "open";
-import { PUBLIC_DIR } from "../core/paths.js";
 import {
   formatRecipeStoreError,
   listRecipesResult,
@@ -15,7 +14,8 @@ import { planServiceResult } from "../services/plan-service.js";
 import { repairServiceResult } from "../services/repair-service.js";
 import { runServiceResult } from "../services/run-service.js";
 import type { Recipe } from "../types.js";
-import { endSse, initSse, sendSseEvent, sseReporter } from "./sse.js";
+import { RecipeEditorPage, UI_CLIENT_SCRIPT, UiLayout } from "./page.js";
+import { createSseConnection, sendSseEvent, sseReporter } from "./sse.js";
 
 const isObject = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -164,19 +164,35 @@ export const _uiInternals = {
   isValidRecipe,
 };
 
-export const startUiServer = async (port = 4312): Promise<void> => {
-  const app = express();
-  app.use(express.json({ limit: "2mb" }));
-  app.use(express.static(PUBLIC_DIR));
+const ensureRendered = <T>(content: T | null): T => {
+  if (content === null) {
+    throw new Error("UI component returned null");
+  }
+  return content;
+};
 
-  app.get("/api/recipes", async (_req, res) => {
+export const startUiServer = async (port = 4312): Promise<void> => {
+  const app = new Hono();
+  app.use(
+    "/*",
+    jsxRenderer(({ children }) => {
+      return ensureRendered(UiLayout({ children }));
+    }),
+  );
+
+  app.get("/ui-client.js", (c) => {
+    return c.body(UI_CLIENT_SCRIPT, 200, {
+      "Content-Type": "application/javascript; charset=utf-8",
+    });
+  });
+
+  app.get("/api/recipes", async (c) => {
     const result = await listRecipesResult();
     if (result.isErr()) {
-      res.status(500).json({ error: formatRecipeStoreError(result.error) });
-      return;
+      return c.json({ error: formatRecipeStoreError(result.error) }, 500);
     }
     const recipes = result.value;
-    res.json(
+    return c.json(
       recipes.map((r) => ({
         id: r.id,
         version: r.version,
@@ -186,100 +202,108 @@ export const startUiServer = async (port = 4312): Promise<void> => {
     );
   });
 
-  app.get("/api/recipes/:id", async (req, res) => {
-    const result = await loadRecipeResult(req.params.id);
+  app.get("/api/recipes/:id", async (c) => {
+    const result = await loadRecipeResult(c.req.param("id"));
     if (result.isErr()) {
       if (result.error.kind === "recipe_read_failed") {
-        res.status(404).json({ error: "recipe not found" });
-        return;
+        return c.json({ error: "recipe not found" }, 404);
       }
-      res.status(500).json({ error: formatRecipeStoreError(result.error) });
-      return;
+      return c.json({ error: formatRecipeStoreError(result.error) }, 500);
     }
-    res.json(result.value);
+    return c.json(result.value);
   });
 
-  app.put("/api/recipes/:id", async (req, res) => {
-    const body = req.body;
+  app.put("/api/recipes/:id", async (c) => {
+    const body = await c.req.json().catch(() => null);
     if (!isObject(body) || typeof body.id !== "string") {
-      res.status(400).json({ error: "invalid recipe payload" });
-      return;
+      return c.json({ error: "invalid recipe payload" }, 400);
     }
-    if (body.id !== req.params.id) {
-      res.status(400).json({ error: "recipe id mismatch" });
-      return;
+    if (body.id !== c.req.param("id")) {
+      return c.json({ error: "recipe id mismatch" }, 400);
     }
     if (!isValidRecipe(body)) {
-      res.status(400).json({ error: "invalid recipe payload" });
-      return;
+      return c.json({ error: "invalid recipe payload" }, 400);
     }
 
     const saveResult = await saveRecipeResult(body);
     if (saveResult.isErr()) {
-      res.status(500).json({ error: formatRecipeStoreError(saveResult.error) });
-      return;
+      return c.json({ error: formatRecipeStoreError(saveResult.error) }, 500);
     }
-    res.json({ ok: true });
+    return c.json({ ok: true });
   });
 
-  app.get("/api/health", (_req, res) => {
-    res.json({ ok: true });
+  app.get("/api/health", (c) => {
+    return c.json({ ok: true });
   });
 
-  app.get("/api/recordings", async (_req, res) => {
+  app.get("/api/recordings", async (c) => {
     const result = await listRecordingsResult();
     if (result.isErr()) {
-      res.status(500).json({ error: formatRecordStoreError(result.error) });
-      return;
+      return c.json({ error: formatRecordStoreError(result.error) }, 500);
     }
-    res.json(result.value);
+    return c.json(result.value);
   });
 
-  app.post("/api/compile/:name", async (req, res) => {
-    const { name } = req.params;
-    initSse(res);
-    const progress = sseReporter(res);
-    try {
-      const result = await compileServiceResult(name, { progress });
-      if (result.isErr()) {
-        sendSseEvent(res, "error", { code: result.error.code, message: result.error.message });
-      } else {
-        sendSseEvent(res, "done", result.value);
+  app.post("/api/compile/:name", (c) => {
+    const name = c.req.param("name");
+    const sse = createSseConnection();
+    const progress = sseReporter(sse);
+
+    void (async () => {
+      try {
+        const result = await compileServiceResult(name, { progress });
+        if (result.isErr()) {
+          sendSseEvent(sse, "error", { code: result.error.code, message: result.error.message });
+        } else {
+          sendSseEvent(sse, "done", result.value);
+        }
+      } catch (cause) {
+        sendSseEvent(sse, "error", { code: "unexpected", message: String(cause) });
+      } finally {
+        await sse.close();
       }
-    } catch (cause) {
-      sendSseEvent(res, "error", { code: "unexpected", message: String(cause) });
-    }
-    endSse(res);
+    })();
+
+    return sse.response;
   });
 
-  app.post("/api/run/:name", async (req, res) => {
-    const { name } = req.params;
-    const { vars } = req.body ?? {};
+  app.post("/api/run/:name", async (c) => {
+    const name = c.req.param("name");
+    const body = await c.req.json().catch(() => null);
+    const vars = isObject(body) ? body.vars : undefined;
     const varStrings = parseVarsBody(vars);
-    initSse(res);
-    const progress = sseReporter(res);
-    try {
-      const result = await runServiceResult(name, { vars: varStrings, progress });
-      if (result.isErr()) {
-        sendSseEvent(res, "error", { code: result.error.code, message: result.error.message });
-      } else {
-        sendSseEvent(res, "done", result.value);
+    const sse = createSseConnection();
+    const progress = sseReporter(sse);
+
+    void (async () => {
+      try {
+        const result = await runServiceResult(name, { vars: varStrings, progress });
+        if (result.isErr()) {
+          sendSseEvent(sse, "error", { code: result.error.code, message: result.error.message });
+        } else {
+          sendSseEvent(sse, "done", result.value);
+        }
+      } catch (cause) {
+        sendSseEvent(sse, "error", { code: "unexpected", message: String(cause) });
+      } finally {
+        await sse.close();
       }
-    } catch (cause) {
-      sendSseEvent(res, "error", { code: "unexpected", message: String(cause) });
-    }
-    endSse(res);
+    })();
+
+    return sse.response;
   });
 
-  app.post("/api/plan/:name", async (req, res) => {
-    const { name } = req.params;
-    const { vars } = req.body ?? {};
+  app.post("/api/plan/:name", async (c) => {
+    const name = c.req.param("name");
+    const body = await c.req.json().catch(() => null);
+    const vars = isObject(body) ? body.vars : undefined;
     const varStrings = parseVarsBody(vars);
+
     try {
       const result = await planServiceResult(name, { vars: varStrings });
       if (result.isErr()) {
         const clientErrors = new Set(["invalid_vars", "unresolved_vars"]);
-        let status: number;
+        let status: 400 | 404 | 500;
         if (result.error.code === "recipe_not_found") {
           status = 404;
         } else if (clientErrors.has(result.error.code)) {
@@ -287,34 +311,31 @@ export const startUiServer = async (port = 4312): Promise<void> => {
         } else {
           status = 500;
         }
-        res.status(status).json({ error: result.error.message, code: result.error.code });
-        return;
+        return c.json({ error: result.error.message, code: result.error.code }, status);
       }
-      res.json(result.value);
+      return c.json(result.value);
     } catch (cause) {
-      res.status(500).json({ error: String(cause), code: "unexpected" });
+      return c.json({ error: String(cause), code: "unexpected" }, 500);
     }
   });
 
-  app.post("/api/repair/:name", async (req, res) => {
-    const { name } = req.params;
+  app.post("/api/repair/:name", async (c) => {
+    const name = c.req.param("name");
     const result = await repairServiceResult(name);
     if (result.isErr()) {
       const status = result.error.code === "recipe_not_found" ? 404 : 500;
-      res.status(status).json({ error: result.error.message, code: result.error.code });
-      return;
+      return c.json({ error: result.error.message, code: result.error.code }, status);
     }
-    res.json(result.value);
+    return c.json(result.value);
   });
 
-  app.get("*", async (_req, res) => {
-    const html = await fs.readFile(path.join(PUBLIC_DIR, "index.html"), "utf-8");
-    res.type("html").send(html);
+  app.get("*", (c) => {
+    return c.render(ensureRendered(RecipeEditorPage({})));
   });
 
-  app.listen(port, async () => {
-    const url = `http://localhost:${port}`;
+  serve({ fetch: app.fetch, port }, (info) => {
+    const url = `http://localhost:${info.port}`;
     process.stdout.write(`UI: ${url}\n`);
-    await open(url);
+    void open(url);
   });
 };
