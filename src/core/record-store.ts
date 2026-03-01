@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { type Result, err, ok } from "neverthrow";
 import type { RecordedEvent } from "../types.js";
 import { ensureBaseDirs, recordingDir, recordingRawPath, recordingSnapshotsDir } from "./fs.js";
+import { RECORDINGS_DIR } from "./paths.js";
 
 export type RecordStoreError =
   | {
@@ -113,6 +114,30 @@ export const readRecordedEventsResult = async (
   }
 
   return ok(events);
+};
+
+export const listRecordingsResult = async (): Promise<Result<string[], RecordStoreError>> => {
+  try {
+    await ensureBaseDirs();
+    const entries = await fs.readdir(RECORDINGS_DIR, { withFileTypes: true });
+    const names: string[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      try {
+        await fs.access(recordingRawPath(entry.name));
+        names.push(entry.name);
+      } catch {
+        // not a valid recording directory
+      }
+    }
+    return ok(names);
+  } catch (cause) {
+    return err({
+      kind: "recording_read_failed",
+      recordingName: "*",
+      message: causeMessage(cause),
+    });
+  }
 };
 
 export const initRecording = async (name: string): Promise<void> => {

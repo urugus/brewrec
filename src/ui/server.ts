@@ -9,7 +9,13 @@ import {
   loadRecipeResult,
   saveRecipeResult,
 } from "../core/recipe-store.js";
+import { formatRecordStoreError, listRecordingsResult } from "../core/record-store.js";
+import { compileServiceResult } from "../services/compile-service.js";
+import { planServiceResult } from "../services/plan-service.js";
+import { repairServiceResult } from "../services/repair-service.js";
+import { runServiceResult } from "../services/run-service.js";
 import type { Recipe } from "../types.js";
+import { endSse, initSse, sendSseEvent, sseReporter } from "./sse.js";
 
 const isObject = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -207,6 +213,80 @@ export const startUiServer = async (port = 4312): Promise<void> => {
 
   app.get("/api/health", (_req, res) => {
     res.json({ ok: true });
+  });
+
+  app.get("/api/recordings", async (_req, res) => {
+    const result = await listRecordingsResult();
+    if (result.isErr()) {
+      res.status(500).json({ error: formatRecordStoreError(result.error) });
+      return;
+    }
+    res.json(result.value);
+  });
+
+  app.post("/api/compile/:name", async (req, res) => {
+    const { name } = req.params;
+    const { llmCommand } = req.body ?? {};
+    initSse(res);
+    const progress = sseReporter(res);
+    try {
+      const result = await compileServiceResult(name, { llmCommand, progress });
+      if (result.isErr()) {
+        sendSseEvent(res, "error", { code: result.error.code, message: result.error.message });
+      } else {
+        sendSseEvent(res, "done", result.value);
+      }
+    } catch (cause) {
+      sendSseEvent(res, "error", { code: "unexpected", message: String(cause) });
+    }
+    endSse(res);
+  });
+
+  app.post("/api/run/:name", async (req, res) => {
+    const { name } = req.params;
+    const { vars, llmCommand } = req.body ?? {};
+    const varStrings: string[] = vars
+      ? Object.entries(vars as Record<string, string>).map(([k, v]) => `${k}=${v}`)
+      : [];
+    initSse(res);
+    const progress = sseReporter(res);
+    try {
+      const result = await runServiceResult(name, { vars: varStrings, llmCommand, progress });
+      if (result.isErr()) {
+        sendSseEvent(res, "error", { code: result.error.code, message: result.error.message });
+      } else {
+        sendSseEvent(res, "done", result.value);
+      }
+    } catch (cause) {
+      sendSseEvent(res, "error", { code: "unexpected", message: String(cause) });
+    }
+    endSse(res);
+  });
+
+  app.post("/api/plan/:name", async (req, res) => {
+    const { name } = req.params;
+    const { vars, llmCommand } = req.body ?? {};
+    const varStrings: string[] = vars
+      ? Object.entries(vars as Record<string, string>).map(([k, v]) => `${k}=${v}`)
+      : [];
+    const result = await planServiceResult(name, { vars: varStrings, llmCommand });
+    if (result.isErr()) {
+      const status = result.error.code === "recipe_not_found" ? 404 : 400;
+      res.status(status).json({ error: result.error.message, code: result.error.code });
+      return;
+    }
+    res.json(result.value);
+  });
+
+  app.post("/api/repair/:name", async (req, res) => {
+    const { name } = req.params;
+    const result = await repairServiceResult(name);
+    if (result.isErr()) {
+      const status = result.error.code === "recipe_not_found" ? 404 : 500;
+      res.status(status).json({ error: result.error.message, code: result.error.code });
+      return;
+    }
+    res.json(result.value);
   });
 
   app.get("*", async (_req, res) => {
