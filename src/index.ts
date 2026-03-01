@@ -4,7 +4,7 @@ import { compileCommandResult } from "./commands/compile.js";
 import { debugCommandResult } from "./commands/debug.js";
 import { recordCommandResult } from "./commands/record.js";
 import { repairCommandResult } from "./commands/repair.js";
-import { formatCommandError } from "./commands/result.js";
+import { formatCommandError, serviceErrorToCommandError } from "./commands/result.js";
 import { runCommandResult } from "./commands/run.js";
 import { listRecipesServiceResult } from "./services/list-service.js";
 import { startUiServer } from "./ui/server.js";
@@ -108,7 +108,7 @@ program
   .action(async (options: { json: boolean }) => {
     const result = await listRecipesServiceResult();
     if (result.isErr()) {
-      throw new Error(result.error.message);
+      throw new Error(formatCommandError(serviceErrorToCommandError("list", result.error)));
     }
     if (options.json) {
       process.stdout.write(`${JSON.stringify(result.value.recipes)}\n`);

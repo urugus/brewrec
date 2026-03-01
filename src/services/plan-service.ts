@@ -45,5 +45,5 @@ export const planServiceResult = async (
     });
   }
 
-  return ok({ name, version: recipe.version, plan });
+  return ok({ name, version: recipe.version, plan, downloadDir: recipe.downloadDir });
 };

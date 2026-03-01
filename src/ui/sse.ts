@@ -7,14 +7,28 @@ export const initSse = (res: Response): void => {
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
   });
+  try {
+    if (!res.writableEnded && !res.destroyed) {
+      res.write(":\n\n");
+    }
+  } catch {
+    // client already disconnected
+  }
 };
 
 export const sendSseEvent = (res: Response, event: string, data: unknown): void => {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  if (res.writableEnded || res.destroyed) return;
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  } catch {
+    // client already disconnected
+  }
 };
 
 export const endSse = (res: Response): void => {
-  res.end();
+  if (!res.writableEnded && !res.destroyed) {
+    res.end();
+  }
 };
 
 export const sseReporter = (res: Response): ProgressReporter => {

@@ -130,6 +130,7 @@ export const listRecordingsResult = async (): Promise<Result<string[], RecordSto
         // not a valid recording directory
       }
     }
+    names.sort();
     return ok(names);
   } catch (cause) {
     return err({

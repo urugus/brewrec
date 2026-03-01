@@ -14,6 +14,7 @@ export type PlanResult = {
   name: string;
   version: number;
   plan: ExecutionPlan;
+  downloadDir?: string;
 };
 
 export type RunResult = {

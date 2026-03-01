@@ -25,6 +25,17 @@ const isStringArray = (value: unknown): value is string[] => {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 };
 
+const isStringRecord = (value: unknown): value is Record<string, string> => {
+  if (!isObject(value)) return false;
+  return Object.values(value).every((v) => typeof v === "string");
+};
+
+const parseVarsBody = (vars: unknown): string[] => {
+  if (!vars) return [];
+  if (!isStringRecord(vars)) return [];
+  return Object.entries(vars).map(([k, v]) => `${k}=${v}`);
+};
+
 const isValidRecipe = (value: unknown): value is Recipe => {
   if (!isObject(value)) return false;
   if (typeof value.schemaVersion !== "number") return false;
@@ -226,11 +237,10 @@ export const startUiServer = async (port = 4312): Promise<void> => {
 
   app.post("/api/compile/:name", async (req, res) => {
     const { name } = req.params;
-    const { llmCommand } = req.body ?? {};
     initSse(res);
     const progress = sseReporter(res);
     try {
-      const result = await compileServiceResult(name, { llmCommand, progress });
+      const result = await compileServiceResult(name, { progress });
       if (result.isErr()) {
         sendSseEvent(res, "error", { code: result.error.code, message: result.error.message });
       } else {
@@ -244,14 +254,12 @@ export const startUiServer = async (port = 4312): Promise<void> => {
 
   app.post("/api/run/:name", async (req, res) => {
     const { name } = req.params;
-    const { vars, llmCommand } = req.body ?? {};
-    const varStrings: string[] = vars
-      ? Object.entries(vars as Record<string, string>).map(([k, v]) => `${k}=${v}`)
-      : [];
+    const { vars } = req.body ?? {};
+    const varStrings = parseVarsBody(vars);
     initSse(res);
     const progress = sseReporter(res);
     try {
-      const result = await runServiceResult(name, { vars: varStrings, llmCommand, progress });
+      const result = await runServiceResult(name, { vars: varStrings, progress });
       if (result.isErr()) {
         sendSseEvent(res, "error", { code: result.error.code, message: result.error.message });
       } else {
@@ -265,17 +273,27 @@ export const startUiServer = async (port = 4312): Promise<void> => {
 
   app.post("/api/plan/:name", async (req, res) => {
     const { name } = req.params;
-    const { vars, llmCommand } = req.body ?? {};
-    const varStrings: string[] = vars
-      ? Object.entries(vars as Record<string, string>).map(([k, v]) => `${k}=${v}`)
-      : [];
-    const result = await planServiceResult(name, { vars: varStrings, llmCommand });
-    if (result.isErr()) {
-      const status = result.error.code === "recipe_not_found" ? 404 : 400;
-      res.status(status).json({ error: result.error.message, code: result.error.code });
-      return;
+    const { vars } = req.body ?? {};
+    const varStrings = parseVarsBody(vars);
+    try {
+      const result = await planServiceResult(name, { vars: varStrings });
+      if (result.isErr()) {
+        const clientErrors = new Set(["invalid_vars", "unresolved_vars"]);
+        let status: number;
+        if (result.error.code === "recipe_not_found") {
+          status = 404;
+        } else if (clientErrors.has(result.error.code)) {
+          status = 400;
+        } else {
+          status = 500;
+        }
+        res.status(status).json({ error: result.error.message, code: result.error.code });
+        return;
+      }
+      res.json(result.value);
+    } catch (cause) {
+      res.status(500).json({ error: String(cause), code: "unexpected" });
     }
-    res.json(result.value);
   });
 
   app.post("/api/repair/:name", async (req, res) => {

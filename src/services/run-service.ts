@@ -1,7 +1,6 @@
 import { type Result, err, ok } from "neverthrow";
 import { formatRunExecuteError, runPlanSteps } from "../commands/run.js";
 import { resolveDownloadDir } from "../core/fs.js";
-import { formatRecipeStoreError, loadRecipeResult } from "../core/recipe-store.js";
 import { planServiceResult } from "./plan-service.js";
 import { nullReporter } from "./progress.js";
 import type { ProgressReporter } from "./progress.js";
@@ -26,13 +25,9 @@ export const runServiceResult = async (
   if (planResult.isErr()) {
     return err(planResult.error);
   }
-  const { version, plan } = planResult.value;
+  const { version, plan, downloadDir: recipeDownloadDir } = planResult.value;
 
-  const recipeResult = await loadRecipeResult(name);
-  if (recipeResult.isErr()) {
-    return err({ code: "recipe_not_found", message: formatRecipeStoreError(recipeResult.error) });
-  }
-  const downloadDir = await resolveDownloadDir(name, recipeResult.value.downloadDir);
+  const downloadDir = await resolveDownloadDir(name, recipeDownloadDir);
 
   progress({ type: "info", message: `Running ${plan.steps.length} steps...` });
 
