@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { err } from "neverthrow";
 import { describe, expect, it } from "vitest";
 import { buildExecutionPlan, buildExecutionPlanResult } from "../src/core/execution-plan.js";
 import { vaultPath } from "../src/core/fs.js";
@@ -265,14 +266,42 @@ describe("execution plan", () => {
       });
       expect(result.isErr()).toBe(true);
       if (result.isErr()) {
-        expect(result.error.kind).toBe("unexpected_error");
-        if (result.error.kind === "unexpected_error") {
+        expect(result.error.kind).toBe("secret_store_error");
+        if (result.error.kind === "secret_store_error") {
           expect(result.error.phase).toBe("secret_loader");
-          expect(result.error.message).toMatch(/Secret vault parse failed/);
+          expect(result.error.error.kind).toBe("vault_parse_failed");
         }
       }
     } finally {
       await fs.unlink(file).catch(() => {});
+    }
+  });
+
+  it("returns typed error when secret saver returns typed error result", async () => {
+    const recipe: Recipe = {
+      ...baseRecipe(),
+      variables: [{ name: "tenant", required: true, resolver: { type: "secret" } }],
+    };
+
+    const result = await buildExecutionPlanResult(recipe, {
+      cliVars: { tenant: "from-cli" },
+      promptRunner: async () => "",
+      secretLoader: async () => undefined,
+      secretSaver: async () =>
+        err({
+          kind: "vault_write_failed",
+          recipeName: "sample",
+          message: "disk full",
+        }),
+    });
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error.kind).toBe("secret_store_error");
+      if (result.error.kind === "secret_store_error") {
+        expect(result.error.phase).toBe("secret_saver");
+        expect(result.error.error.kind).toBe("vault_write_failed");
+      }
     }
   });
 });

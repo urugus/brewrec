@@ -4,8 +4,12 @@ import { chromium } from "playwright";
 import type { Page } from "playwright";
 import { recordingSnapshotsDir } from "../core/fs.js";
 import { injectRecordingCapabilities } from "../core/init-script.js";
-import { appendRecordedEvent, initRecording } from "../core/record-store.js";
-import { saveSecret } from "../core/secret-store.js";
+import {
+  appendRecordedEventResult,
+  formatRecordStoreError,
+  initRecordingResult,
+} from "../core/record-store.js";
+import { formatSecretStoreError, saveSecretResult } from "../core/secret-store.js";
 
 type RecordOptions = {
   url: string;
@@ -13,10 +17,20 @@ type RecordOptions = {
 
 const nowIso = (): string => new Date().toISOString();
 
+const appendEvent = async (
+  name: string,
+  event: Parameters<typeof appendRecordedEventResult>[1],
+) => {
+  const result = await appendRecordedEventResult(name, event);
+  if (result.isErr()) {
+    throw new Error(formatRecordStoreError(result.error));
+  }
+};
+
 const wirePageEvents = async (name: string, page: Page): Promise<void> => {
   page.on("framenavigated", async (frame) => {
     if (frame !== page.mainFrame()) return;
-    await appendRecordedEvent(name, {
+    await appendEvent(name, {
       ts: nowIso(),
       type: "navigation",
       url: frame.url(),
@@ -33,7 +47,7 @@ const wirePageEvents = async (name: string, page: Page): Promise<void> => {
   });
 
   page.on("request", async (request) => {
-    await appendRecordedEvent(name, {
+    await appendEvent(name, {
       ts: nowIso(),
       type: "request",
       url: page.url(),
@@ -45,7 +59,7 @@ const wirePageEvents = async (name: string, page: Page): Promise<void> => {
   });
 
   page.on("response", async (response) => {
-    await appendRecordedEvent(name, {
+    await appendEvent(name, {
       ts: nowIso(),
       type: "response",
       url: page.url(),
@@ -56,7 +70,7 @@ const wirePageEvents = async (name: string, page: Page): Promise<void> => {
   });
 
   page.on("console", async (message) => {
-    await appendRecordedEvent(name, {
+    await appendEvent(name, {
       ts: nowIso(),
       type: "console",
       url: page.url(),
@@ -66,32 +80,40 @@ const wirePageEvents = async (name: string, page: Page): Promise<void> => {
 };
 
 export const recordCommand = async (name: string, options: RecordOptions): Promise<void> => {
-  await initRecording(name);
-
-  const browser = await chromium.launch({ headless: false });
-  const context = await browser.newContext();
-
-  const capturedSecrets = new Map<string, string>();
-  await injectRecordingCapabilities(
-    context,
-    async (_page, event) => {
-      await appendRecordedEvent(name, event);
-    },
-    (fieldName, value) => {
-      capturedSecrets.set(fieldName, value);
-    },
-  );
-
-  const page = await context.newPage();
-  await wirePageEvents(name, page);
-
-  await page.goto(options.url, { waitUntil: "domcontentloaded" });
-
-  await page.waitForEvent("close", { timeout: 0 });
-
-  for (const [fieldName, value] of capturedSecrets) {
-    await saveSecret(name, fieldName, value);
+  const initResult = await initRecordingResult(name);
+  if (initResult.isErr()) {
+    throw new Error(formatRecordStoreError(initResult.error));
   }
 
-  await browser.close();
+  const browser = await chromium.launch({ headless: false });
+  try {
+    const context = await browser.newContext();
+
+    const capturedSecrets = new Map<string, string>();
+    await injectRecordingCapabilities(
+      context,
+      async (_page, event) => {
+        await appendEvent(name, event);
+      },
+      (fieldName, value) => {
+        capturedSecrets.set(fieldName, value);
+      },
+    );
+
+    const page = await context.newPage();
+    await wirePageEvents(name, page);
+
+    await page.goto(options.url, { waitUntil: "domcontentloaded" });
+
+    await page.waitForEvent("close", { timeout: 0 });
+
+    for (const [fieldName, value] of capturedSecrets) {
+      const saveResult = await saveSecretResult(name, fieldName, value);
+      if (saveResult.isErr()) {
+        throw new Error(formatSecretStoreError(saveResult.error));
+      }
+    }
+  } finally {
+    await browser.close();
+  }
 };
