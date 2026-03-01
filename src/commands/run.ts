@@ -25,7 +25,13 @@ import {
 import { injectRecordingCapabilities } from "../core/init-script.js";
 import { loadRecipe, saveRecipe } from "../core/recipe-store.js";
 import { healSelector } from "../core/selector-healer.js";
-import { assertEffects, assertGuards, matchesUrl } from "../core/step-validation.js";
+import {
+  assertEffects,
+  assertGuards,
+  formatStepValidationError,
+  matchesUrl,
+  validateGuards,
+} from "../core/step-validation.js";
 import { parseCliVariables } from "../core/template-vars.js";
 import type { Recipe, RecipeStep, RecordedEvent } from "../types.js";
 
@@ -369,15 +375,12 @@ const runHttpStep = async (
   downloadDir: string,
   heal?: boolean,
 ): Promise<string | undefined> => {
-  try {
-    await assertGuards(step, { currentUrl: guardUrl });
-  } catch {
+  const guardResult = await validateGuards(step, { currentUrl: guardUrl });
+  if (guardResult.isErr()) {
     if (heal && canSkipGuardForHttp(step, guardUrl)) {
       logGuardSkipped(step.guards?.find((g) => g.type === "url_is")?.value ?? "", guardUrl ?? "");
     } else {
-      throw new Error(
-        `Guard failed: ${step.guards?.map((g) => `${g.type}=${g.value}`).join(", ")} (step=${step.id})`,
-      );
+      throw new Error(formatStepValidationError(guardResult.error));
     }
   }
 
@@ -406,21 +409,18 @@ const executePwStepWithHeal = async (
   healed: boolean;
   patchSelectors?: string[];
 }> => {
+  const guardResult = await validateGuards(step, { currentUrl: currentUrl ?? page.url(), page });
+  if (guardResult.isErr()) {
+    const healed = await tryGuardWithHeal(step, currentUrl ?? page.url(), page);
+    if (!healed) {
+      throw new Error(formatStepValidationError(guardResult.error));
+    }
+  }
+
   try {
-    await assertGuards(step, { currentUrl: currentUrl ?? page.url(), page });
     const newUrl = await executeStep(page, step, currentUrl);
     return { currentUrl: newUrl, healed: false };
   } catch (err) {
-    const errorMsg = (err as Error).message;
-
-    if (errorMsg.startsWith("Guard failed:")) {
-      const healed = await tryGuardWithHeal(step, currentUrl ?? page.url(), page);
-      if (healed) {
-        const newUrl = await executeStep(page, step, currentUrl);
-        return { currentUrl: newUrl, healed: false };
-      }
-    }
-
     if (step.action !== "click" && step.action !== "fill") {
       throw err;
     }
