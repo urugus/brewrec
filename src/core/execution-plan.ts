@@ -1,7 +1,12 @@
 import { type Result, err, ok } from "neverthrow";
 import type { Recipe, RecipeStep, RecipeVariable } from "../types.js";
 import { runLocalClaude } from "./llm.js";
-import { formatSecretStoreError, loadSecretResult, saveSecretResult } from "./secret-store.js";
+import {
+  type SecretStoreError,
+  formatSecretStoreError,
+  loadSecretResult,
+  saveSecretResult,
+} from "./secret-store.js";
 import {
   type TemplateVarError,
   collectStepTemplateTokens,
@@ -20,6 +25,8 @@ export type ExecutionPlan = {
 };
 
 type PromptRunner = (prompt: string, command?: string) => Promise<string>;
+type SecretLoaderResult = Result<string | undefined, SecretStoreError>;
+type SecretSaverResult = Result<void, SecretStoreError>;
 
 export type BuildExecutionPlanOptions = {
   cliVars?: Record<string, string>;
@@ -48,6 +55,12 @@ export type BuildExecutionPlanError =
       phase: "secret_loader" | "prompt_runner" | "secret_saver";
       variableName: string;
       message: string;
+    }
+  | {
+      kind: "secret_store_error";
+      phase: "secret_loader" | "secret_saver";
+      variableName: string;
+      error: SecretStoreError;
     };
 
 export const formatBuildExecutionPlanError = (error: BuildExecutionPlanError): string => {
@@ -61,6 +74,10 @@ export const formatBuildExecutionPlanError = (error: BuildExecutionPlanError): s
       return `Step ${error.stepId}: ${base}`;
     }
     return base;
+  }
+
+  if (error.kind === "secret_store_error") {
+    return `Secret store failed (${error.phase}, ${error.variableName}): ${formatSecretStoreError(error.error)}`;
   }
 
   return `Unexpected execution plan error: phase=${error.phase}, variable=${error.variableName}: ${error.message}`;
@@ -104,12 +121,35 @@ const pickPromptValue = (output: string): string => {
   return firstNonEmpty ?? "";
 };
 
-type SecretLoader = (recipeName: string, variableName: string) => Promise<string | undefined>;
-type SecretSaver = (recipeName: string, variableName: string, plaintext: string) => Promise<void>;
+type SecretLoader = (
+  recipeName: string,
+  variableName: string,
+) => Promise<string | undefined | SecretLoaderResult>;
+type SecretSaver = (
+  recipeName: string,
+  variableName: string,
+  plaintext: string,
+) => Promise<undefined | SecretSaverResult>;
 
 const causeMessage = (cause: unknown): string => {
   if (cause instanceof Error) return cause.message;
   return String(cause);
+};
+
+const isResultLike = <T, E>(value: unknown): value is Result<T, E> => {
+  return typeof value === "object" && value !== null && "isErr" in value && "isOk" in value;
+};
+
+const normalizeSecretLoaderResult = (
+  value: string | undefined | SecretLoaderResult,
+): SecretLoaderResult => {
+  if (isResultLike<string | undefined, SecretStoreError>(value)) return value;
+  return ok(value);
+};
+
+const normalizeSecretSaverResult = (value: undefined | SecretSaverResult): SecretSaverResult => {
+  if (isResultLike<void, SecretStoreError>(value)) return value;
+  return ok(undefined);
 };
 
 const resolveVariableBySpecResult = async (
@@ -149,7 +189,18 @@ const resolveVariableBySpecResult = async (
 
   if (resolver.type === "secret") {
     try {
-      return ok(await context.secretLoader(context.recipeId, variable.name));
+      const loaderResult = normalizeSecretLoaderResult(
+        await context.secretLoader(context.recipeId, variable.name),
+      );
+      if (loaderResult.isErr()) {
+        return err({
+          kind: "secret_store_error",
+          phase: "secret_loader",
+          variableName: variable.name,
+          error: loaderResult.error,
+        });
+      }
+      return ok(loaderResult.value);
     } catch (cause) {
       return err({
         kind: "unexpected_error",
@@ -198,21 +249,15 @@ export const buildExecutionPlanResult = async (
   const promptRunner = options.promptRunner ?? runLocalClaude;
   const secretLoaderFn =
     options.secretLoader ??
-    (async (recipeName: string, variableName: string): Promise<string | undefined> => {
-      const result = await loadSecretResult(recipeName, variableName);
-      if (result.isErr()) {
-        throw new Error(formatSecretStoreError(result.error));
-      }
-      return result.value;
-    });
+    (async (recipeName: string, variableName: string): Promise<SecretLoaderResult> =>
+      loadSecretResult(recipeName, variableName));
   const secretSaverFn =
     options.secretSaver ??
-    (async (recipeName: string, variableName: string, plaintext: string): Promise<void> => {
-      const result = await saveSecretResult(recipeName, variableName, plaintext);
-      if (result.isErr()) {
-        throw new Error(formatSecretStoreError(result.error));
-      }
-    });
+    (async (
+      recipeName: string,
+      variableName: string,
+      plaintext: string,
+    ): Promise<SecretSaverResult> => saveSecretResult(recipeName, variableName, plaintext));
   const resolvedVars: Record<string, string> = { ...(options.cliVars ?? {}) };
   const warnings: string[] = [];
   const unresolvedVars = new Set<string>();
@@ -251,7 +296,17 @@ export const buildExecutionPlanResult = async (
   for (const variable of recipe.variables ?? []) {
     if (variable.resolver?.type === "secret" && resolvedVars[variable.name] !== undefined) {
       try {
-        await secretSaverFn(recipe.id, variable.name, resolvedVars[variable.name]);
+        const saveResult = normalizeSecretSaverResult(
+          await secretSaverFn(recipe.id, variable.name, resolvedVars[variable.name]),
+        );
+        if (saveResult.isErr()) {
+          return err({
+            kind: "secret_store_error",
+            phase: "secret_saver",
+            variableName: variable.name,
+            error: saveResult.error,
+          });
+        }
       } catch (cause) {
         return err({
           kind: "unexpected_error",
