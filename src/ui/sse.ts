@@ -15,35 +15,66 @@ const SSE_HEADERS: Record<string, string> = {
 const encoder = new TextEncoder();
 
 export const createSseConnection = (): SseConnection => {
-  const stream = new TransformStream<Uint8Array, Uint8Array>();
-  const writer = stream.writable.getWriter();
+  const pendingChunks: Uint8Array[] = [];
+  let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
+  let accepting = true;
+  let finalized = false;
+  let closePromise: Promise<void> | null = null;
 
-  let closed = false;
-  let writeQueue: Promise<void> = Promise.resolve();
+  const finalize = (): void => {
+    if (finalized) return;
+    accepting = false;
+    finalized = true;
+    try {
+      controller?.close();
+    } catch {
+      // already closed
+    }
+    controller = null;
+  };
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+      for (const chunk of pendingChunks) {
+        if (finalized) break;
+        c.enqueue(chunk);
+      }
+      pendingChunks.length = 0;
+    },
+    cancel() {
+      finalize();
+    },
+  });
 
   const enqueue = (chunk: string): void => {
-    if (closed) return;
+    if (!accepting) return;
+    const encoded = encoder.encode(chunk);
 
-    writeQueue = writeQueue
-      .then(async () => {
-        if (closed) return;
-        await writer.write(encoder.encode(chunk));
-      })
-      .catch(() => {
-        closed = true;
-      });
+    if (!controller) {
+      pendingChunks.push(encoded);
+      return;
+    }
+
+    try {
+      controller.enqueue(encoded);
+    } catch {
+      finalize();
+    }
   };
 
   enqueue(":\n\n");
 
   return {
     close: async () => {
-      if (closed) return;
-      closed = true;
-      await writeQueue.catch(() => undefined);
-      await writer.close().catch(() => undefined);
+      if (closePromise) return closePromise;
+      accepting = false;
+      closePromise = (async () => {
+        finalize();
+      })();
+      await closePromise;
     },
-    response: new Response(stream.readable, { headers: SSE_HEADERS }),
+    response: new Response(stream, { headers: SSE_HEADERS }),
     send: (event: string, data: unknown) => {
       enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     },

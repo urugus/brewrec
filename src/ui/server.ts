@@ -1,5 +1,7 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
+import type { Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { jsxRenderer } from "hono/jsx-renderer";
 import open from "open";
 import {
@@ -34,6 +36,31 @@ const parseVarsBody = (vars: unknown): string[] => {
   if (!vars) return [];
   if (!isStringRecord(vars)) return [];
   return Object.entries(vars).map(([k, v]) => `${k}=${v}`);
+};
+
+const isJsonContentType = (contentType: string | undefined): boolean => {
+  if (!contentType) return false;
+  return contentType.toLowerCase().includes("application/json");
+};
+
+const parseOptionalJsonBody = async (
+  c: Context,
+  errorPayload: { error: string; code?: string },
+): Promise<{ body: unknown } | { errorResponse: Response }> => {
+  if (!isJsonContentType(c.req.header("content-type"))) {
+    return { body: null };
+  }
+
+  const rawBody = await c.req.text();
+  if (rawBody.trim() === "") {
+    return { body: null };
+  }
+
+  try {
+    return { body: JSON.parse(rawBody) };
+  } catch {
+    return { errorResponse: c.json(errorPayload, 400) };
+  }
 };
 
 const isValidRecipe = (value: unknown): value is Recipe => {
@@ -179,6 +206,15 @@ export const startUiServer = async (port = 4312): Promise<void> => {
       return ensureRendered(UiLayout({ children }));
     }),
   );
+  app.use(
+    "/api/*",
+    bodyLimit({
+      maxSize: 2 * 1024 * 1024,
+      onError: (c) => {
+        return c.json({ error: "payload too large", code: "payload_too_large" }, 413);
+      },
+    }),
+  );
 
   app.get("/ui-client.js", (c) => {
     return c.body(UI_CLIENT_SCRIPT, 200, {
@@ -269,8 +305,14 @@ export const startUiServer = async (port = 4312): Promise<void> => {
 
   app.post("/api/run/:name", async (c) => {
     const name = c.req.param("name");
-    const body = await c.req.json().catch(() => null);
-    const vars = isObject(body) ? body.vars : undefined;
+    const parsedBody = await parseOptionalJsonBody(c, {
+      error: "invalid json body",
+      code: "invalid_json",
+    });
+    if ("errorResponse" in parsedBody) {
+      return parsedBody.errorResponse;
+    }
+    const vars = isObject(parsedBody.body) ? parsedBody.body.vars : undefined;
     const varStrings = parseVarsBody(vars);
     const sse = createSseConnection();
     const progress = sseReporter(sse);
@@ -295,8 +337,14 @@ export const startUiServer = async (port = 4312): Promise<void> => {
 
   app.post("/api/plan/:name", async (c) => {
     const name = c.req.param("name");
-    const body = await c.req.json().catch(() => null);
-    const vars = isObject(body) ? body.vars : undefined;
+    const parsedBody = await parseOptionalJsonBody(c, {
+      error: "invalid json body",
+      code: "invalid_json",
+    });
+    if ("errorResponse" in parsedBody) {
+      return parsedBody.errorResponse;
+    }
+    const vars = isObject(parsedBody.body) ? parsedBody.body.vars : undefined;
     const varStrings = parseVarsBody(vars);
 
     try {

@@ -83,26 +83,68 @@ const saveBtn = document.getElementById("saveBtn");
 const status = document.getElementById("status");
 let currentId = "";
 
+const setStatus = (message) => {
+  if (status) {
+    status.textContent = message;
+  }
+};
+
+const parseJsonSafe = async (res) => {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+};
+
 const fetchRecipes = async () => {
-  const res = await fetch("/api/recipes");
-  const recipes = await res.json();
   recipeList.innerHTML = "";
-  for (const recipe of recipes) {
-    const li = document.createElement("li");
-    const btn = document.createElement("button");
-    btn.textContent = recipe.id + " v" + recipe.version;
-    btn.onclick = () => openRecipe(recipe.id);
-    li.appendChild(btn);
-    recipeList.appendChild(li);
+  try {
+    const res = await fetch("/api/recipes");
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      if (data && typeof data === "object" && "error" in data && typeof data.error === "string") {
+        setStatus(data.error);
+      } else {
+        setStatus("failed to load recipes");
+      }
+      return;
+    }
+    if (!Array.isArray(data)) {
+      setStatus("failed to load recipes");
+      return;
+    }
+    for (const recipe of data) {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.textContent = recipe.id + " v" + recipe.version;
+      btn.onclick = () => openRecipe(recipe.id);
+      li.appendChild(btn);
+      recipeList.appendChild(li);
+    }
+  } catch {
+    setStatus("failed to load recipes");
   }
 };
 
 const openRecipe = async (id) => {
-  const res = await fetch("/api/recipes/" + id);
-  const recipe = await res.json();
-  currentId = id;
-  editor.value = JSON.stringify(recipe, null, 2);
-  status.textContent = "opened: " + id;
+  try {
+    const res = await fetch("/api/recipes/" + id);
+    const data = await parseJsonSafe(res);
+    if (!res.ok) {
+      if (data && typeof data === "object" && "error" in data && typeof data.error === "string") {
+        setStatus(data.error);
+      } else {
+        setStatus("failed to open recipe");
+      }
+      return;
+    }
+    currentId = id;
+    editor.value = JSON.stringify(data, null, 2);
+    setStatus("opened: " + id);
+  } catch {
+    setStatus("failed to open recipe");
+  }
 };
 
 saveBtn.onclick = async () => {
@@ -114,9 +156,18 @@ saveBtn.onclick = async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    status.textContent = res.ok ? "saved" : "save failed";
+    if (res.ok) {
+      setStatus("saved");
+      return;
+    }
+    const data = await parseJsonSafe(res);
+    if (data && typeof data === "object" && "error" in data && typeof data.error === "string") {
+      setStatus(data.error);
+    } else {
+      setStatus("save failed");
+    }
   } catch {
-    status.textContent = "invalid json";
+    setStatus("invalid json");
   }
 };
 
