@@ -2,8 +2,12 @@ import { eventsToCompileResult } from "../core/compile-heuristic.js";
 import { applyCredentialVariables } from "../core/credential-vars.js";
 import { exists, recipePath } from "../core/fs.js";
 import { formatLocalLlmError, runLocalClaudeResult } from "../core/llm.js";
-import { loadRecipe, saveRecipe } from "../core/recipe-store.js";
-import { readRecordedEvents } from "../core/record-store.js";
+import {
+  formatRecipeStoreError,
+  loadRecipeResult,
+  saveRecipeResult,
+} from "../core/recipe-store.js";
+import { formatRecordStoreError, readRecordedEventsResult } from "../core/record-store.js";
 import type { Recipe, RecordedEvent } from "../types.js";
 
 type CompileOptions = {
@@ -20,7 +24,11 @@ const buildPrompt = (events: RecordedEvent[]): string => {
 };
 
 export const compileCommand = async (name: string, options: CompileOptions): Promise<void> => {
-  const events = await readRecordedEvents(name);
+  const eventsResult = await readRecordedEventsResult(name);
+  if (eventsResult.isErr()) {
+    throw new Error(formatRecordStoreError(eventsResult.error));
+  }
+  const events = eventsResult.value;
   const { steps: rawSteps, stats } = eventsToCompileResult(events);
   const { steps, variables: secretVars } = applyCredentialVariables(rawSteps, events);
 
@@ -34,7 +42,11 @@ export const compileCommand = async (name: string, options: CompileOptions): Pro
 
   let version = 1;
   if (await exists(p)) {
-    const prev = await loadRecipe(name);
+    const prevResult = await loadRecipeResult(name);
+    if (prevResult.isErr()) {
+      throw new Error(formatRecipeStoreError(prevResult.error));
+    }
+    const prev = prevResult.value;
     version = prev.version + 1;
   }
 
@@ -60,5 +72,8 @@ export const compileCommand = async (name: string, options: CompileOptions): Pro
     notes,
   };
 
-  await saveRecipe(recipe);
+  const saveResult = await saveRecipeResult(recipe);
+  if (saveResult.isErr()) {
+    throw new Error(formatRecipeStoreError(saveResult.error));
+  }
 };
