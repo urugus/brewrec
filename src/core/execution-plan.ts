@@ -1,11 +1,14 @@
+import { type Result, err, ok } from "neverthrow";
 import type { Recipe, RecipeStep, RecipeVariable } from "../types.js";
 import { runLocalClaude } from "./llm.js";
 import { loadSecret, saveSecret } from "./secret-store.js";
 import {
+  type TemplateVarError,
   collectStepTemplateTokens,
+  formatTemplateVarError,
   isBuiltinTemplateToken,
-  resolveRecipeStepTemplates,
-  resolveTemplateString,
+  resolveRecipeStepTemplatesResult,
+  resolveTemplateStringResult,
 } from "./template-vars.js";
 
 export type ExecutionPlan = {
@@ -27,21 +30,70 @@ export type BuildExecutionPlanOptions = {
   secretSaver?: SecretSaver;
 };
 
+export type BuildExecutionPlanError =
+  | {
+      kind: "variable_validation_failed";
+      variableName: string;
+      message: string;
+    }
+  | {
+      kind: "template_error";
+      phase: "resolver_builtin" | "resolver_prompt" | "step_resolution";
+      error: TemplateVarError;
+      variableName?: string;
+      stepId?: string;
+    }
+  | {
+      kind: "unexpected_error";
+      phase: "secret_loader" | "prompt_runner" | "secret_saver";
+      variableName: string;
+      message: string;
+    };
+
+export const formatBuildExecutionPlanError = (error: BuildExecutionPlanError): string => {
+  if (error.kind === "variable_validation_failed") {
+    return error.message;
+  }
+
+  if (error.kind === "template_error") {
+    const base = formatTemplateVarError(error.error);
+    if (error.phase === "step_resolution" && error.stepId) {
+      return `Step ${error.stepId}: ${base}`;
+    }
+    return base;
+  }
+
+  return `Unexpected execution plan error: phase=${error.phase}, variable=${error.variableName}: ${error.message}`;
+};
+
 const isDateValue = (value: string): boolean => {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 };
 
-const validateResolvedVariable = (variable: RecipeVariable, value: string): void => {
+const validateResolvedVariableResult = (
+  variable: RecipeVariable,
+  value: string,
+): Result<void, BuildExecutionPlanError> => {
   if (variable.type === "date" && !isDateValue(value)) {
-    throw new Error(`Variable ${variable.name} must be date format YYYY-MM-DD`);
+    return err({
+      kind: "variable_validation_failed",
+      variableName: variable.name,
+      message: `Variable ${variable.name} must be date format YYYY-MM-DD`,
+    });
   }
 
   if (variable.pattern) {
     const pattern = new RegExp(variable.pattern);
     if (!pattern.test(value)) {
-      throw new Error(`Variable ${variable.name} does not match pattern: ${variable.pattern}`);
+      return err({
+        kind: "variable_validation_failed",
+        variableName: variable.name,
+        message: `Variable ${variable.name} does not match pattern: ${variable.pattern}`,
+      });
     }
   }
+
+  return ok(undefined);
 };
 
 const pickPromptValue = (output: string): string => {
@@ -55,7 +107,12 @@ const pickPromptValue = (output: string): string => {
 type SecretLoader = (recipeName: string, variableName: string) => Promise<string | undefined>;
 type SecretSaver = (recipeName: string, variableName: string, plaintext: string) => Promise<void>;
 
-const resolveVariableBySpec = async (
+const causeMessage = (cause: unknown): string => {
+  if (cause instanceof Error) return cause.message;
+  return String(cause);
+};
+
+const resolveVariableBySpecResult = async (
   variable: RecipeVariable,
   resolvedVars: Record<string, string>,
   context: {
@@ -65,37 +122,78 @@ const resolveVariableBySpec = async (
     promptRunner: PromptRunner;
     secretLoader: SecretLoader;
   },
-): Promise<string | undefined> => {
+): Promise<Result<string | undefined, BuildExecutionPlanError>> => {
   const resolver = variable.resolver;
 
   if (!resolver || resolver.type === "cli") {
     const key = resolver?.key;
-    if (key) return resolvedVars[key];
-    return resolvedVars[variable.name];
+    if (key) return ok(resolvedVars[key]);
+    return ok(resolvedVars[variable.name]);
   }
 
   if (resolver.type === "builtin") {
-    return resolveTemplateString(`{{${resolver.expr}}}`, { vars: resolvedVars, now: context.now });
+    const builtinResult = resolveTemplateStringResult(`{{${resolver.expr}}}`, {
+      vars: resolvedVars,
+      now: context.now,
+    });
+    if (builtinResult.isErr()) {
+      return err({
+        kind: "template_error",
+        phase: "resolver_builtin",
+        variableName: variable.name,
+        error: builtinResult.error,
+      });
+    }
+    return ok(builtinResult.value);
   }
 
   if (resolver.type === "secret") {
-    return await context.secretLoader(context.recipeId, variable.name);
+    try {
+      return ok(await context.secretLoader(context.recipeId, variable.name));
+    } catch (cause) {
+      return err({
+        kind: "unexpected_error",
+        phase: "secret_loader",
+        variableName: variable.name,
+        message: causeMessage(cause),
+      });
+    }
   }
 
-  const prompt = resolveTemplateString(resolver.promptTemplate, {
+  const promptResult = resolveTemplateStringResult(resolver.promptTemplate, {
     vars: resolvedVars,
     now: context.now,
   });
-  const output = await context.promptRunner(prompt, context.llmCommand);
+  if (promptResult.isErr()) {
+    return err({
+      kind: "template_error",
+      phase: "resolver_prompt",
+      variableName: variable.name,
+      error: promptResult.error,
+    });
+  }
+
+  let output = "";
+  try {
+    output = await context.promptRunner(promptResult.value, context.llmCommand);
+  } catch (cause) {
+    return err({
+      kind: "unexpected_error",
+      phase: "prompt_runner",
+      variableName: variable.name,
+      message: causeMessage(cause),
+    });
+  }
+
   const value = pickPromptValue(output);
-  if (!value) return undefined;
-  return value;
+  if (!value) return ok(undefined);
+  return ok(value);
 };
 
-export const buildExecutionPlan = async (
+export const buildExecutionPlanResult = async (
   recipe: Recipe,
   options: BuildExecutionPlanOptions = {},
-): Promise<ExecutionPlan> => {
+): Promise<Result<ExecutionPlan, BuildExecutionPlanError>> => {
   const now = options.now ?? new Date();
   const promptRunner = options.promptRunner ?? runLocalClaude;
   const secretLoaderFn = options.secretLoader ?? loadSecret;
@@ -105,22 +203,26 @@ export const buildExecutionPlan = async (
   const unresolvedVars = new Set<string>();
 
   for (const variable of recipe.variables ?? []) {
-    if (resolvedVars[variable.name] !== undefined) {
-      validateResolvedVariable(variable, resolvedVars[variable.name]);
+    const preResolved = resolvedVars[variable.name];
+    if (preResolved !== undefined) {
+      const validationResult = validateResolvedVariableResult(variable, preResolved);
+      if (validationResult.isErr()) return err(validationResult.error);
       continue;
     }
 
-    const resolved = await resolveVariableBySpec(variable, resolvedVars, {
+    const resolvedResult = await resolveVariableBySpecResult(variable, resolvedVars, {
       now,
       recipeId: recipe.id,
       llmCommand: options.llmCommand,
       promptRunner,
       secretLoader: secretLoaderFn,
     });
+    if (resolvedResult.isErr()) return err(resolvedResult.error);
 
-    const finalValue = resolved ?? variable.defaultValue;
+    const finalValue = resolvedResult.value ?? variable.defaultValue;
     if (finalValue !== undefined) {
-      validateResolvedVariable(variable, finalValue);
+      const validationResult = validateResolvedVariableResult(variable, finalValue);
+      if (validationResult.isErr()) return err(validationResult.error);
       resolvedVars[variable.name] = finalValue;
       continue;
     }
@@ -133,7 +235,16 @@ export const buildExecutionPlan = async (
 
   for (const variable of recipe.variables ?? []) {
     if (variable.resolver?.type === "secret" && resolvedVars[variable.name] !== undefined) {
-      await secretSaverFn(recipe.id, variable.name, resolvedVars[variable.name]);
+      try {
+        await secretSaverFn(recipe.id, variable.name, resolvedVars[variable.name]);
+      } catch (cause) {
+        return err({
+          kind: "unexpected_error",
+          phase: "secret_saver",
+          variableName: variable.name,
+          message: causeMessage(cause),
+        });
+      }
     }
   }
 
@@ -147,16 +258,41 @@ export const buildExecutionPlan = async (
 
   let resolvedSteps = recipe.steps;
   if (unresolvedVars.size === 0) {
-    resolvedSteps = recipe.steps.map((step) =>
-      resolveRecipeStepTemplates(step, { vars: resolvedVars, now }),
-    );
+    const stepResults: RecipeStep[] = [];
+    for (const step of recipe.steps) {
+      const resolvedStepResult = resolveRecipeStepTemplatesResult(step, {
+        vars: resolvedVars,
+        now,
+      });
+      if (resolvedStepResult.isErr()) {
+        return err({
+          kind: "template_error",
+          phase: "step_resolution",
+          stepId: step.id,
+          error: resolvedStepResult.error,
+        });
+      }
+      stepResults.push(resolvedStepResult.value);
+    }
+    resolvedSteps = stepResults;
   }
 
-  return {
+  return ok({
     now: now.toISOString(),
     resolvedVars,
     unresolvedVars: [...unresolvedVars].sort((a, b) => a.localeCompare(b)),
     warnings,
     steps: resolvedSteps,
-  };
+  });
+};
+
+export const buildExecutionPlan = async (
+  recipe: Recipe,
+  options: BuildExecutionPlanOptions = {},
+): Promise<ExecutionPlan> => {
+  const result = await buildExecutionPlanResult(recipe, options);
+  if (result.isErr()) {
+    throw new Error(formatBuildExecutionPlanError(result.error));
+  }
+  return result.value;
 };
