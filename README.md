@@ -74,6 +74,9 @@ browrec repair <name>
 
 # レシピ管理UIを起動
 browrec ui --port 4312
+
+# GUIの開発サーバー（HonoX + Vite）
+npm run dev:ui
 ```
 
 ## ディレクトリ構成
@@ -87,12 +90,17 @@ recipes/
   <name>.recipe.json
 artifacts/
   <name>/
-public/
-  index.html
+app/
+  server.ts
+  routes/
+  islands/
+dist-ui/
+  index.js
+  static/client.js
 src/
   commands/
   core/
-  ui/
+  ui/  # 共通APIインターフェース
 ```
 
 ## レシピモデル（要点）
@@ -132,6 +140,9 @@ npm run lint
 npm run test
 npm run build
 ```
+
+- `npm run build` は CLI (`tsc`) と GUI (`vite build`) の両方をビルド
+- `npm run dev:ui` は HonoX + Vite のGUI開発サーバーを起動
 
 - Test: `vitest`
 - Lint/Format: `biome`
