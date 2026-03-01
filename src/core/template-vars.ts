@@ -1,8 +1,40 @@
+import { type Result, err, ok } from "neverthrow";
 import type { Effect, Guard, RecipeStep } from "../types.js";
 
 export type TemplateContext = {
   vars?: Record<string, string>;
   now?: Date;
+};
+
+export type TemplateVarError =
+  | {
+      kind: "invalid_day_offset";
+      rawOffset: string;
+    }
+  | {
+      kind: "unknown_template_variable";
+      token: string;
+    }
+  | {
+      kind: "invalid_cli_var_format";
+      item: string;
+    }
+  | {
+      kind: "invalid_cli_var_key";
+      item: string;
+    };
+
+export const formatTemplateVarError = (error: TemplateVarError): string => {
+  if (error.kind === "invalid_day_offset") {
+    return `Invalid day offset: ${error.rawOffset}`;
+  }
+  if (error.kind === "unknown_template_variable") {
+    return `Unknown template variable: ${error.token}`;
+  }
+  if (error.kind === "invalid_cli_var_format") {
+    return `Invalid --var format: ${error.item}. Use --var key=value`;
+  }
+  return `Invalid --var key in: ${error.item}`;
 };
 
 const TEMPLATE_PATTERN = /{{\s*([^{}]+?)\s*}}/g;
@@ -16,35 +48,38 @@ const formatDate = (date: Date): string => {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 };
 
-const applyDayOffset = (base: Date, rawOffset?: string): Date => {
-  if (!rawOffset) return base;
+const applyDayOffsetResult = (base: Date, rawOffset?: string): Result<Date, TemplateVarError> => {
+  if (!rawOffset) return ok(base);
   const sign = rawOffset.startsWith("-") ? -1 : 1;
   const numeric = Number(rawOffset.slice(1, -1));
   if (!Number.isFinite(numeric)) {
-    throw new Error(`Invalid day offset: ${rawOffset}`);
+    return err({ kind: "invalid_day_offset", rawOffset });
   }
 
   const date = new Date(base);
   date.setDate(date.getDate() + sign * numeric);
-  return date;
+  return ok(date);
 };
 
-const resolveToken = (token: string, context: TemplateContext): string => {
+const resolveTokenResult = (
+  token: string,
+  context: TemplateContext,
+): Result<string, TemplateVarError> => {
   const fromVars = context.vars?.[token];
-  if (fromVars !== undefined) return fromVars;
+  if (fromVars !== undefined) return ok(fromVars);
 
   if (token === "now") {
-    return (context.now ?? new Date()).toISOString();
+    return ok((context.now ?? new Date()).toISOString());
   }
 
   const todayMatch = token.match(TODAY_PATTERN);
   if (todayMatch) {
     const now = context.now ?? new Date();
     const base = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    return formatDate(applyDayOffset(base, todayMatch[1]));
+    return applyDayOffsetResult(base, todayMatch[1]).map((date) => formatDate(date));
   }
 
-  throw new Error(`Unknown template variable: ${token}`);
+  return err({ kind: "unknown_template_variable", token });
 };
 
 export const isBuiltinTemplateToken = (token: string): boolean => {
@@ -61,54 +96,147 @@ export const listTemplateTokens = (value: string): string[] => {
   return [...tokens];
 };
 
+export const resolveTemplateStringResult = (
+  value: string,
+  context: TemplateContext = {},
+): Result<string, TemplateVarError> => {
+  let resolved = "";
+  let lastIndex = 0;
+
+  for (const match of value.matchAll(TEMPLATE_PATTERN)) {
+    const rawToken = match[1];
+    if (rawToken === undefined) continue;
+
+    const fullMatch = match[0] ?? "";
+    const index = match.index ?? 0;
+    resolved += value.slice(lastIndex, index);
+
+    const tokenResult = resolveTokenResult(String(rawToken).trim(), context);
+    if (tokenResult.isErr()) return err(tokenResult.error);
+
+    resolved += tokenResult.value;
+    lastIndex = index + fullMatch.length;
+  }
+
+  resolved += value.slice(lastIndex);
+  return ok(resolved);
+};
+
 export const resolveTemplateString = (value: string, context: TemplateContext = {}): string => {
-  return value.replace(TEMPLATE_PATTERN, (_full, token) =>
-    resolveToken(String(token).trim(), context),
-  );
+  const result = resolveTemplateStringResult(value, context);
+  if (result.isErr()) {
+    throw new Error(formatTemplateVarError(result.error));
+  }
+  return result.value;
 };
 
-const resolveGuard = (guard: Guard, context: TemplateContext): Guard => {
-  return { ...guard, value: resolveTemplateString(guard.value, context) };
+const resolveGuardResult = (
+  guard: Guard,
+  context: TemplateContext,
+): Result<Guard, TemplateVarError> => {
+  return resolveTemplateStringResult(guard.value, context).map((value) => ({ ...guard, value }));
 };
 
-const resolveEffect = (effect: Effect, context: TemplateContext): Effect => {
-  return { ...effect, value: resolveTemplateString(effect.value, context) };
+const resolveEffectResult = (
+  effect: Effect,
+  context: TemplateContext,
+): Result<Effect, TemplateVarError> => {
+  return resolveTemplateStringResult(effect.value, context).map((value) => ({ ...effect, value }));
+};
+
+export const resolveRecipeStepTemplatesResult = (
+  step: RecipeStep,
+  context: TemplateContext = {},
+): Result<RecipeStep, TemplateVarError> => {
+  const urlResult = step.url ? resolveTemplateStringResult(step.url, context) : ok(step.url);
+  if (urlResult.isErr()) return err(urlResult.error);
+
+  const valueResult =
+    step.value !== undefined ? resolveTemplateStringResult(step.value, context) : ok(step.value);
+  if (valueResult.isErr()) return err(valueResult.error);
+
+  let selectorVariants: string[] | undefined;
+  if (step.selectorVariants) {
+    const resolvedSelectors: string[] = [];
+    for (const selector of step.selectorVariants) {
+      const selectorResult = resolveTemplateStringResult(selector, context);
+      if (selectorResult.isErr()) return err(selectorResult.error);
+      resolvedSelectors.push(selectorResult.value);
+    }
+    selectorVariants = resolvedSelectors;
+  }
+
+  let guards: Guard[] | undefined;
+  if (step.guards) {
+    const resolvedGuards: Guard[] = [];
+    for (const guard of step.guards) {
+      const guardResult = resolveGuardResult(guard, context);
+      if (guardResult.isErr()) return err(guardResult.error);
+      resolvedGuards.push(guardResult.value);
+    }
+    guards = resolvedGuards;
+  }
+
+  let effects: Effect[] | undefined;
+  if (step.effects) {
+    const resolvedEffects: Effect[] = [];
+    for (const effect of step.effects) {
+      const effectResult = resolveEffectResult(effect, context);
+      if (effectResult.isErr()) return err(effectResult.error);
+      resolvedEffects.push(effectResult.value);
+    }
+    effects = resolvedEffects;
+  }
+
+  return ok({
+    ...step,
+    url: urlResult.value,
+    value: valueResult.value,
+    selectorVariants,
+    guards,
+    effects,
+  });
 };
 
 export const resolveRecipeStepTemplates = (
   step: RecipeStep,
   context: TemplateContext = {},
 ): RecipeStep => {
-  return {
-    ...step,
-    url: step.url ? resolveTemplateString(step.url, context) : step.url,
-    value: step.value !== undefined ? resolveTemplateString(step.value, context) : step.value,
-    selectorVariants: step.selectorVariants?.map((selector) =>
-      resolveTemplateString(selector, context),
-    ),
-    guards: step.guards?.map((guard) => resolveGuard(guard, context)),
-    effects: step.effects?.map((effect) => resolveEffect(effect, context)),
-  };
+  const result = resolveRecipeStepTemplatesResult(step, context);
+  if (result.isErr()) {
+    throw new Error(formatTemplateVarError(result.error));
+  }
+  return result.value;
 };
 
-export const parseCliVariables = (raw: string[]): Record<string, string> => {
+export const parseCliVariablesResult = (
+  raw: string[],
+): Result<Record<string, string>, TemplateVarError> => {
   const vars: Record<string, string> = {};
 
   for (const item of raw) {
     const index = item.indexOf("=");
     if (index <= 0 || index === item.length - 1) {
-      throw new Error(`Invalid --var format: ${item}. Use --var key=value`);
+      return err({ kind: "invalid_cli_var_format", item });
     }
 
     const key = item.slice(0, index).trim();
     const value = item.slice(index + 1);
     if (!key) {
-      throw new Error(`Invalid --var key in: ${item}`);
+      return err({ kind: "invalid_cli_var_key", item });
     }
     vars[key] = value;
   }
 
-  return vars;
+  return ok(vars);
+};
+
+export const parseCliVariables = (raw: string[]): Record<string, string> => {
+  const result = parseCliVariablesResult(raw);
+  if (result.isErr()) {
+    throw new Error(formatTemplateVarError(result.error));
+  }
+  return result.value;
 };
 
 export const collectStepTemplateTokens = (step: RecipeStep): string[] => {

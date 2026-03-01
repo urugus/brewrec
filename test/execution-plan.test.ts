@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildExecutionPlan } from "../src/core/execution-plan.js";
+import { buildExecutionPlan, buildExecutionPlanResult } from "../src/core/execution-plan.js";
 import type { Recipe } from "../src/types.js";
 
 const baseRecipe = (): Recipe => {
@@ -222,5 +222,25 @@ describe("execution plan", () => {
         promptRunner: async () => "2026/02/27",
       }),
     ).rejects.toThrow(/YYYY-MM-DD/);
+  });
+
+  it("returns typed error result for invalid date variable format", async () => {
+    const recipe: Recipe = {
+      ...baseRecipe(),
+      variables: [
+        { name: "targetDate", type: "date", resolver: { type: "prompted", promptTemplate: "x" } },
+      ],
+    };
+
+    const result = await buildExecutionPlanResult(recipe, {
+      promptRunner: async () => "2026/02/27",
+    });
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error.kind).toBe("variable_validation_failed");
+      expect(result.error.variableName).toBe("targetDate");
+      expect(result.error.message).toMatch(/YYYY-MM-DD/);
+    }
   });
 });

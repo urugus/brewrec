@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatTemplateVarError,
   parseCliVariables,
+  parseCliVariablesResult,
   resolveRecipeStepTemplates,
   resolveTemplateString,
+  resolveTemplateStringResult,
 } from "../src/core/template-vars.js";
 import type { RecipeStep } from "../src/types.js";
 
@@ -56,5 +59,23 @@ describe("template vars", () => {
 
   it("fails for unknown template variable", () => {
     expect(() => resolveTemplateString("{{missing}}")).toThrow(/Unknown template variable/);
+  });
+
+  it("returns typed error for unknown template variable", () => {
+    const result = resolveTemplateStringResult("{{missing}}");
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error.kind).toBe("unknown_template_variable");
+      expect(formatTemplateVarError(result.error)).toMatch(/Unknown template variable/);
+    }
+  });
+
+  it("returns typed error for invalid --var format", () => {
+    const result = parseCliVariablesResult(["tenant"]);
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error.kind).toBe("invalid_cli_var_format");
+      expect(formatTemplateVarError(result.error)).toMatch(/Use --var key=value/);
+    }
   });
 });
