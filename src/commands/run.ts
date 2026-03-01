@@ -135,30 +135,34 @@ export const applyPhase2Replacements = (
   return mergedSteps;
 };
 
-const tryClick = async (page: Page, selectors: string[]): Promise<void> => {
+const tryClickResult = async (page: Page, selectors: string[]): Promise<Result<void, string>> => {
   for (const selector of selectors) {
     try {
       await page.locator(selector).first().click({ timeout: 1200 });
-      return;
+      return ok(undefined);
     } catch {
       // try next candidate
     }
   }
 
-  throw new Error(`Click failed for selectors: ${selectors.join(", ")}`);
+  return err(`Click failed for selectors: ${selectors.join(", ")}`);
 };
 
-const tryFill = async (page: Page, selectors: string[], value: string): Promise<void> => {
+const tryFillResult = async (
+  page: Page,
+  selectors: string[],
+  value: string,
+): Promise<Result<void, string>> => {
   for (const selector of selectors) {
     try {
       await page.locator(selector).first().fill(value, { timeout: 1200 });
-      return;
+      return ok(undefined);
     } catch {
       // try next candidate
     }
   }
 
-  throw new Error(`Fill failed for selectors: ${selectors.join(", ")}`);
+  return err(`Fill failed for selectors: ${selectors.join(", ")}`);
 };
 
 const tryGuardWithHeal = async (
@@ -244,7 +248,10 @@ const executeStepResult = async (
       if (selectors.length === 0) {
         return err(stepExecutionError(step.id, `No selectorVariants for click step: ${step.id}`));
       }
-      await tryClick(page, selectors);
+      const clickResult = await tryClickResult(page, selectors);
+      if (clickResult.isErr()) {
+        return err(stepExecutionError(step.id, clickResult.error));
+      }
       await settleAfterAction(page);
       const newUrl = page.url();
       await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
@@ -256,7 +263,10 @@ const executeStepResult = async (
       if (selectors.length === 0) {
         return err(stepExecutionError(step.id, `No selectorVariants for fill step: ${step.id}`));
       }
-      await tryFill(page, selectors, step.value);
+      const fillResult = await tryFillResult(page, selectors, step.value);
+      if (fillResult.isErr()) {
+        return err(stepExecutionError(step.id, fillResult.error));
+      }
       await settleAfterAction(page);
       const newUrl = page.url();
       await assertEffects(step, { beforeUrl, currentUrl: newUrl, page });
@@ -326,7 +336,7 @@ const extensionFromContentType = (contentType?: string): string => {
 
 const MAX_UNIQUE_PATH_ATTEMPTS = 1000;
 
-const ensureUniquePath = async (targetPath: string): Promise<string> => {
+const ensureUniquePathResult = async (targetPath: string): Promise<Result<string, string>> => {
   const parsed = path.parse(targetPath);
   for (let count = 0; count <= MAX_UNIQUE_PATH_ATTEMPTS; count++) {
     const candidate =
@@ -334,12 +344,14 @@ const ensureUniquePath = async (targetPath: string): Promise<string> => {
     try {
       const handle = await fs.open(candidate, "wx");
       await handle.close();
-      return candidate;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      return ok(candidate);
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "EEXIST") {
+        return err(causeMessage(cause));
+      }
     }
   }
-  throw new Error(
+  return err(
     `Could not find unique path after ${MAX_UNIQUE_PATH_ATTEMPTS} attempts: ${targetPath}`,
   );
 };
@@ -348,7 +360,7 @@ const saveHttpDownloadIfNeeded = async (
   step: RecipeStep,
   response: Awaited<ReturnType<APIRequestContext["fetch"]>>,
   downloadDir: string,
-): Promise<void> => {
+): Promise<Result<void, string>> => {
   const responseUrl = response.url();
   const headers = response.headers();
   const contentDisposition = headers["content-disposition"];
@@ -357,7 +369,7 @@ const saveHttpDownloadIfNeeded = async (
     Boolean(contentDisposition?.toLowerCase().includes("attachment")) ||
     isDocumentDownload(responseUrl);
 
-  if (!shouldSave) return;
+  if (!shouldSave) return ok(undefined);
 
   const headerFilename = parseContentDispositionFilename(contentDisposition);
   const urlBasename = (() => {
@@ -373,10 +385,19 @@ const saveHttpDownloadIfNeeded = async (
   const extension = extensionFromContentType(headers["content-type"]);
   const fallbackName = `${step.id}${extension}`;
   const filename = sanitizeFilename(headerFilename ?? urlBasename ?? fallbackName);
-  const finalPath = await ensureUniquePath(path.join(downloadDir, filename));
-  const body = await response.body();
-  await fs.writeFile(finalPath, body);
-  process.stderr.write(`  Downloaded: ${finalPath}\n`);
+  const uniquePathResult = await ensureUniquePathResult(path.join(downloadDir, filename));
+  if (uniquePathResult.isErr()) {
+    return err(uniquePathResult.error);
+  }
+  const finalPath = uniquePathResult.value;
+  try {
+    const body = await response.body();
+    await fs.writeFile(finalPath, body);
+    process.stderr.write(`  Downloaded: ${finalPath}\n`);
+    return ok(undefined);
+  } catch (cause) {
+    return err(causeMessage(cause));
+  }
 };
 
 const setupDownloadHandler = (page: Page, downloadDir: string): void => {
@@ -461,7 +482,10 @@ const runHttpStepResult = async (
       timeout: 5000,
     });
     const responseUrl = response.url();
-    await saveHttpDownloadIfNeeded(step, response, downloadDir);
+    const downloadResult = await saveHttpDownloadIfNeeded(step, response, downloadDir);
+    if (downloadResult.isErr()) {
+      return err(stepExecutionError(step.id, downloadResult.error));
+    }
     await assertEffects(step, { beforeUrl, currentUrl: responseUrl });
     return ok(responseUrl);
   } catch (cause) {
@@ -911,10 +935,14 @@ const runPlanStepsWithHeal = async (
   }
 };
 
-const runCommandInternal = async (name: string, options: RunOptions): Promise<void> => {
+const runCommandInternalResult = async (
+  name: string,
+  options: RunOptions,
+): Promise<Result<void, CommandError>> => {
+  const commandName = options.planOnly ? "plan" : "run";
   const recipeResult = await loadRecipeResult(name);
   if (recipeResult.isErr()) {
-    throw new Error(formatRecipeStoreError(recipeResult.error));
+    return err(toCommandError(commandName, formatRecipeStoreError(recipeResult.error)));
   }
   const recipe = recipeResult.value;
   const cliVarsResult = parseCliVariablesResult(options.vars ?? []);
@@ -925,7 +953,7 @@ const runCommandInternal = async (name: string, options: RunOptions): Promise<vo
         `${JSON.stringify({ name, version: recipe.version, ok: false, phase: "plan", error: message })}\n`,
       );
     }
-    throw new Error(message);
+    return err(toCommandError(commandName, message));
   }
 
   const planResult = await buildExecutionPlanResult(recipe, {
@@ -939,7 +967,7 @@ const runCommandInternal = async (name: string, options: RunOptions): Promise<vo
         `${JSON.stringify({ name, version: recipe.version, ok: false, phase: "plan", error: message })}\n`,
       );
     }
-    throw new Error(message);
+    return err(toCommandError(commandName, message));
   }
   const plan = planResult.value;
 
@@ -950,18 +978,34 @@ const runCommandInternal = async (name: string, options: RunOptions): Promise<vo
         `${JSON.stringify({ name, version: recipe.version, ok: false, phase: "plan", ...plan })}\n`,
       );
     }
-    throw new Error(message);
+    return err(toCommandError(commandName, message));
   }
 
   if (options.planOnly) {
     process.stdout.write(
       `${JSON.stringify({ name, version: recipe.version, ok: true, phase: "plan", ...plan })}\n`,
     );
-    return;
+    return ok(undefined);
   }
 
   const downloadDir = await resolveDownloadDir(name, recipe.downloadDir);
   let executedVersion = recipe.version;
+  const executeFailure = (message: string): Result<void, CommandError> => {
+    if (options.json) {
+      process.stdout.write(
+        `${JSON.stringify({
+          name,
+          version: executedVersion,
+          ok: false,
+          phase: "execute",
+          error: message,
+          resolvedVars: plan.resolvedVars,
+          warnings: plan.warnings,
+        })}\n`,
+      );
+    }
+    return err(toCommandError(commandName, message));
+  };
 
   try {
     if (options.heal) {
@@ -971,7 +1015,7 @@ const runCommandInternal = async (name: string, options: RunOptions): Promise<vo
         downloadDir,
       );
       if (runResult.isErr()) {
-        throw new Error(formatRunExecuteError(runResult.error));
+        return executeFailure(formatRunExecuteError(runResult.error));
       }
 
       const { healStats, selectorPatches, phase2Replacements } = runResult.value;
@@ -997,7 +1041,7 @@ const runCommandInternal = async (name: string, options: RunOptions): Promise<vo
         };
         const saveResult = await saveRecipeResult(healed);
         if (saveResult.isErr()) {
-          throw new Error(formatRecipeStoreError(saveResult.error));
+          return executeFailure(formatRecipeStoreError(saveResult.error));
         }
         executedVersion = healed.version;
         logRecipeSaved(name, healed.version);
@@ -1006,25 +1050,12 @@ const runCommandInternal = async (name: string, options: RunOptions): Promise<vo
     } else {
       const runResult = await runPlanSteps(plan.steps, downloadDir);
       if (runResult.isErr()) {
-        throw new Error(formatRunExecuteError(runResult.error));
+        return executeFailure(formatRunExecuteError(runResult.error));
       }
     }
   } catch (cause) {
     const message = causeMessage(cause);
-    if (options.json) {
-      process.stdout.write(
-        `${JSON.stringify({
-          name,
-          version: executedVersion,
-          ok: false,
-          phase: "execute",
-          error: message,
-          resolvedVars: plan.resolvedVars,
-          warnings: plan.warnings,
-        })}\n`,
-      );
-    }
-    throw new Error(message);
+    return executeFailure(message);
   }
 
   if (options.json) {
@@ -1039,18 +1070,14 @@ const runCommandInternal = async (name: string, options: RunOptions): Promise<vo
       })}\n`,
     );
   }
+  return ok(undefined);
 };
 
 export const runCommandResult = async (
   name: string,
   options: RunOptions,
 ): Promise<Result<void, CommandError>> => {
-  try {
-    await runCommandInternal(name, options);
-    return ok(undefined);
-  } catch (cause) {
-    return err(toCommandError(options.planOnly ? "plan" : "run", cause));
-  }
+  return runCommandInternalResult(name, options);
 };
 
 export const runCommand = async (name: string, options: RunOptions): Promise<void> => {

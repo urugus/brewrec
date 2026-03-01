@@ -136,6 +136,17 @@ npm run build
 - Test: `vitest`
 - Lint/Format: `biome`
 
+### Result API 方針
+
+このリポジトリでは、失敗は原則として **neverthrow の `Result`** で扱います。
+
+- `src/core/*` と `src/commands/*` の新規実装は、可能な限り `Result` を返す
+- 互換性維持のためのラッパー（旧 API）では `throw` / 既存戻り値 (`null`/`boolean`) を許容
+- CLI 表示用のエラーメッセージ整形は境界（`src/index.ts`）で一元化
+- `run --json` は `plan` / `execute` どちらの失敗でも機械可読な失敗JSONを返す
+
+実装時は、例外ベースで分岐を組むより `Result` の `isOk()/isErr()` で明示的に分岐することを優先してください。
+
 ## 現在のMVP範囲
 
 - Record: click/input/navigation/request/response/console を記録

@@ -23,22 +23,31 @@ const nowIso = (): string => new Date().toISOString();
 const appendEvent = async (
   name: string,
   event: Parameters<typeof appendRecordedEventResult>[1],
-) => {
+): Promise<Result<void, CommandError>> => {
   const result = await appendRecordedEventResult(name, event);
   if (result.isErr()) {
-    throw new Error(formatRecordStoreError(result.error));
+    return err(toCommandError("record", formatRecordStoreError(result.error)));
   }
+  return ok(undefined);
 };
 
-const wirePageEvents = async (name: string, page: Page): Promise<void> => {
+const wirePageEvents = async (
+  name: string,
+  page: Page,
+  onError: (error: CommandError) => void,
+): Promise<void> => {
   page.on("framenavigated", async (frame) => {
     if (frame !== page.mainFrame()) return;
-    await appendEvent(name, {
+    const appendResult = await appendEvent(name, {
       ts: nowIso(),
       type: "navigation",
       url: frame.url(),
       effects: [{ type: "url_changed", value: frame.url() }],
     });
+    if (appendResult.isErr()) {
+      onError(appendResult.error);
+      return;
+    }
 
     try {
       const html = await page.content();
@@ -50,7 +59,7 @@ const wirePageEvents = async (name: string, page: Page): Promise<void> => {
   });
 
   page.on("request", async (request) => {
-    await appendEvent(name, {
+    const appendResult = await appendEvent(name, {
       ts: nowIso(),
       type: "request",
       url: page.url(),
@@ -59,10 +68,13 @@ const wirePageEvents = async (name: string, page: Page): Promise<void> => {
       headers: request.headers(),
       postData: request.postData() ?? undefined,
     });
+    if (appendResult.isErr()) {
+      onError(appendResult.error);
+    }
   });
 
   page.on("response", async (response) => {
-    await appendEvent(name, {
+    const appendResult = await appendEvent(name, {
       ts: nowIso(),
       type: "response",
       url: page.url(),
@@ -70,15 +82,21 @@ const wirePageEvents = async (name: string, page: Page): Promise<void> => {
       status: response.status(),
       headers: response.headers(),
     });
+    if (appendResult.isErr()) {
+      onError(appendResult.error);
+    }
   });
 
   page.on("console", async (message) => {
-    await appendEvent(name, {
+    const appendResult = await appendEvent(name, {
       ts: nowIso(),
       type: "console",
       url: page.url(),
       value: message.text(),
     });
+    if (appendResult.isErr()) {
+      onError(appendResult.error);
+    }
   });
 };
 
@@ -93,45 +111,52 @@ export const recordCommandResult = async (
   name: string,
   options: RecordOptions,
 ): Promise<Result<void, CommandError>> => {
+  const initResult = await initRecordingResult(name);
+  if (initResult.isErr()) {
+    return err(toCommandError("record", formatRecordStoreError(initResult.error)));
+  }
+
+  const browser = await chromium.launch({ headless: false });
   try {
-    const initResult = await initRecordingResult(name);
-    if (initResult.isErr()) {
-      throw new Error(formatRecordStoreError(initResult.error));
-    }
+    const context = await browser.newContext();
+    let asyncError: CommandError | null = null;
+    const setAsyncError = (error: CommandError): void => {
+      if (!asyncError) asyncError = error;
+    };
 
-    const browser = await chromium.launch({ headless: false });
-    try {
-      const context = await browser.newContext();
-
-      const capturedSecrets = new Map<string, string>();
-      await injectRecordingCapabilities(
-        context,
-        async (_page, event) => {
-          await appendEvent(name, event);
-        },
-        (fieldName, value) => {
-          capturedSecrets.set(fieldName, value);
-        },
-      );
-
-      const page = await context.newPage();
-      await wirePageEvents(name, page);
-
-      await page.goto(options.url, { waitUntil: "domcontentloaded" });
-
-      await page.waitForEvent("close", { timeout: 0 });
-
-      for (const [fieldName, value] of capturedSecrets) {
-        const saveResult = await saveSecretResult(name, fieldName, value);
-        if (saveResult.isErr()) {
-          throw new Error(formatSecretStoreError(saveResult.error));
+    const capturedSecrets = new Map<string, string>();
+    await injectRecordingCapabilities(
+      context,
+      async (_page, event) => {
+        const appendResult = await appendEvent(name, event);
+        if (appendResult.isErr()) {
+          setAsyncError(appendResult.error);
         }
+      },
+      (fieldName, value) => {
+        capturedSecrets.set(fieldName, value);
+      },
+    );
+
+    const page = await context.newPage();
+    await wirePageEvents(name, page, setAsyncError);
+
+    await page.goto(options.url, { waitUntil: "domcontentloaded" });
+
+    await page.waitForEvent("close", { timeout: 0 });
+    if (asyncError) return err(asyncError);
+
+    for (const [fieldName, value] of capturedSecrets) {
+      const saveResult = await saveSecretResult(name, fieldName, value);
+      if (saveResult.isErr()) {
+        return err(toCommandError("record", formatSecretStoreError(saveResult.error)));
       }
-    } finally {
-      await browser.close();
     }
+
     return ok(undefined);
   } catch (cause) {
     return err(toCommandError("record", cause));
+  } finally {
+    await browser.close();
   }
 };
