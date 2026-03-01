@@ -1,14 +1,22 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { compileCommand } from "./commands/compile.js";
-import { debugCommand } from "./commands/debug.js";
-import { recordCommand } from "./commands/record.js";
-import { repairCommand } from "./commands/repair.js";
-import { runCommand } from "./commands/run.js";
+import { compileCommandResult } from "./commands/compile.js";
+import { debugCommandResult } from "./commands/debug.js";
+import { recordCommandResult } from "./commands/record.js";
+import { repairCommandResult } from "./commands/repair.js";
+import { formatCommandError } from "./commands/result.js";
+import { runCommandResult } from "./commands/run.js";
 import { startUiServer } from "./ui/server.js";
 
 const program = new Command();
 const collectOptionValues = (value: string, previous: string[]): string[] => [...previous, value];
+const ensureCommandSucceeded = async (
+  commandResult: Awaited<ReturnType<typeof recordCommandResult>>,
+): Promise<void> => {
+  if (commandResult.isErr()) {
+    throw new Error(formatCommandError(commandResult.error));
+  }
+};
 
 program.name("browrec").description("Browser record/compile/run CLI").version("0.2.0");
 
@@ -17,7 +25,7 @@ program
   .argument("<name>", "recording name")
   .option("--url <url>", "start url", "https://example.com")
   .action(async (name: string, options: { url: string }) => {
-    await recordCommand(name, options);
+    await ensureCommandSucceeded(await recordCommandResult(name, options));
   });
 
 program
@@ -25,7 +33,7 @@ program
   .argument("<name>", "recording name")
   .option("--llm-command <cmd>", "local llm command", "claude")
   .action(async (name: string, options: { llmCommand: string }) => {
-    await compileCommand(name, options);
+    await ensureCommandSucceeded(await compileCommandResult(name, options));
   });
 
 program
@@ -47,13 +55,15 @@ program
         heal: boolean;
       },
     ) => {
-      await runCommand(name, {
-        json: options.json,
-        vars: options.var,
-        llmCommand: options.llmCommand,
-        planOnly: options.planOnly,
-        heal: options.heal,
-      });
+      await ensureCommandSucceeded(
+        await runCommandResult(name, {
+          json: options.json,
+          vars: options.var,
+          llmCommand: options.llmCommand,
+          planOnly: options.planOnly,
+          heal: options.heal,
+        }),
+      );
     },
   );
 
@@ -63,12 +73,14 @@ program
   .option("--llm-command <cmd>", "local llm command for prompted variables", "claude")
   .option("--var <key=value>", "runtime variable (repeatable)", collectOptionValues, [])
   .action(async (name: string, options: { var: string[]; llmCommand: string }) => {
-    await runCommand(name, {
-      json: true,
-      vars: options.var,
-      llmCommand: options.llmCommand,
-      planOnly: true,
-    });
+    await ensureCommandSucceeded(
+      await runCommandResult(name, {
+        json: true,
+        vars: options.var,
+        llmCommand: options.llmCommand,
+        planOnly: true,
+      }),
+    );
   });
 
 program
@@ -77,14 +89,16 @@ program
   .option("--llm-command <cmd>", "local llm command for prompted variables", "claude")
   .option("--var <key=value>", "runtime variable (repeatable)", collectOptionValues, [])
   .action(async (name: string, options: { var: string[]; llmCommand: string }) => {
-    await debugCommand(name, { vars: options.var, llmCommand: options.llmCommand });
+    await ensureCommandSucceeded(
+      await debugCommandResult(name, { vars: options.var, llmCommand: options.llmCommand }),
+    );
   });
 
 program
   .command("repair")
   .argument("<name>", "recipe name")
   .action(async (name: string) => {
-    await repairCommand(name);
+    await ensureCommandSucceeded(await repairCommandResult(name));
   });
 
 program

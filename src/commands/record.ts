@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { type Result, err, ok } from "neverthrow";
 import { chromium } from "playwright";
 import type { Page } from "playwright";
 import { recordingSnapshotsDir } from "../core/fs.js";
@@ -10,6 +11,8 @@ import {
   initRecordingResult,
 } from "../core/record-store.js";
 import { formatSecretStoreError, saveSecretResult } from "../core/secret-store.js";
+import type { CommandError } from "./result.js";
+import { toCommandError } from "./result.js";
 
 type RecordOptions = {
   url: string;
@@ -80,40 +83,55 @@ const wirePageEvents = async (name: string, page: Page): Promise<void> => {
 };
 
 export const recordCommand = async (name: string, options: RecordOptions): Promise<void> => {
-  const initResult = await initRecordingResult(name);
-  if (initResult.isErr()) {
-    throw new Error(formatRecordStoreError(initResult.error));
+  const result = await recordCommandResult(name, options);
+  if (result.isErr()) {
+    throw new Error(result.error.message);
   }
+};
 
-  const browser = await chromium.launch({ headless: false });
+export const recordCommandResult = async (
+  name: string,
+  options: RecordOptions,
+): Promise<Result<void, CommandError>> => {
   try {
-    const context = await browser.newContext();
-
-    const capturedSecrets = new Map<string, string>();
-    await injectRecordingCapabilities(
-      context,
-      async (_page, event) => {
-        await appendEvent(name, event);
-      },
-      (fieldName, value) => {
-        capturedSecrets.set(fieldName, value);
-      },
-    );
-
-    const page = await context.newPage();
-    await wirePageEvents(name, page);
-
-    await page.goto(options.url, { waitUntil: "domcontentloaded" });
-
-    await page.waitForEvent("close", { timeout: 0 });
-
-    for (const [fieldName, value] of capturedSecrets) {
-      const saveResult = await saveSecretResult(name, fieldName, value);
-      if (saveResult.isErr()) {
-        throw new Error(formatSecretStoreError(saveResult.error));
-      }
+    const initResult = await initRecordingResult(name);
+    if (initResult.isErr()) {
+      throw new Error(formatRecordStoreError(initResult.error));
     }
-  } finally {
-    await browser.close();
+
+    const browser = await chromium.launch({ headless: false });
+    try {
+      const context = await browser.newContext();
+
+      const capturedSecrets = new Map<string, string>();
+      await injectRecordingCapabilities(
+        context,
+        async (_page, event) => {
+          await appendEvent(name, event);
+        },
+        (fieldName, value) => {
+          capturedSecrets.set(fieldName, value);
+        },
+      );
+
+      const page = await context.newPage();
+      await wirePageEvents(name, page);
+
+      await page.goto(options.url, { waitUntil: "domcontentloaded" });
+
+      await page.waitForEvent("close", { timeout: 0 });
+
+      for (const [fieldName, value] of capturedSecrets) {
+        const saveResult = await saveSecretResult(name, fieldName, value);
+        if (saveResult.isErr()) {
+          throw new Error(formatSecretStoreError(saveResult.error));
+        }
+      }
+    } finally {
+      await browser.close();
+    }
+    return ok(undefined);
+  } catch (cause) {
+    return err(toCommandError("record", cause));
   }
 };
