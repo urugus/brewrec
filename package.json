@@ -7,10 +7,13 @@
   "bin": {
     "browrec": "dist/index.js"
   },
-  "files": ["dist", "public", "README.md"],
+  "files": ["dist", "dist-ui", "README.md"],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run build:cli && npm run build:ui",
+    "build:cli": "tsc -p tsconfig.json",
+    "build:ui": "vite build --mode client && vite build",
     "dev": "tsx src/index.ts",
+    "dev:ui": "vite --port 4312",
     "lint": "biome check . && tsc --noEmit",
     "format": "biome format --write .",
     "test": "vitest run",
@@ -35,9 +38,13 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "@hono/vite-build": "^1.9.3",
+    "@hono/vite-dev-server": "^0.25.0",
     "@types/node": "^22.13.10",
+    "honox": "^0.1.54",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
+    "vite": "^5.4.21",
     "vitest": "^2.1.8"
   }
 }
