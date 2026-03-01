@@ -1,3 +1,4 @@
+import { ResultAsync, errAsync, okAsync } from "neverthrow";
 import type { Page } from "playwright";
 import type { Effect, Guard, RecipeStep } from "../types.js";
 
@@ -10,6 +11,38 @@ type EffectContext = {
   beforeUrl?: string;
   currentUrl?: string;
   page?: Page;
+};
+
+export type StepValidationError = {
+  kind: "guard_failed" | "effect_failed";
+  stepId: string;
+  checkType: string;
+  value: string;
+};
+
+export const formatStepValidationError = (error: StepValidationError): string => {
+  if (error.kind === "guard_failed") {
+    return `Guard failed: ${error.checkType}=${error.value} (step=${error.stepId})`;
+  }
+  return `Effect failed: ${error.checkType}=${error.value} (step=${error.stepId})`;
+};
+
+const guardFailed = (step: RecipeStep, guard: Guard): StepValidationError => {
+  return {
+    kind: "guard_failed",
+    stepId: step.id,
+    checkType: guard.type,
+    value: guard.value,
+  };
+};
+
+const effectFailed = (step: RecipeStep, effect: Effect): StepValidationError => {
+  return {
+    kind: "effect_failed",
+    stepId: step.id,
+    checkType: effect.type,
+    value: effect.value,
+  };
 };
 
 export const matchesUrl = (pattern: string, currentUrl: string): boolean => {
@@ -92,20 +125,56 @@ const evaluateEffect = async (effect: Effect, context: EffectContext): Promise<b
   return true;
 };
 
-export const assertGuards = async (step: RecipeStep, context: GuardContext): Promise<void> => {
+export const validateGuards = (
+  step: RecipeStep,
+  context: GuardContext,
+): ResultAsync<void, StepValidationError> => {
+  let result: ResultAsync<void, StepValidationError> = okAsync(undefined);
+
   for (const guard of step.guards ?? []) {
-    const ok = await evaluateGuard(guard, context);
-    if (!ok) {
-      throw new Error(`Guard failed: ${guard.type}=${guard.value} (step=${step.id})`);
-    }
+    result = result.andThen(() =>
+      ResultAsync.fromPromise(evaluateGuard(guard, context), () =>
+        guardFailed(step, guard),
+      ).andThen((ok) => {
+        if (!ok) return errAsync(guardFailed(step, guard));
+        return okAsync(undefined);
+      }),
+    );
+  }
+
+  return result;
+};
+
+export const validateEffects = (
+  step: RecipeStep,
+  context: EffectContext,
+): ResultAsync<void, StepValidationError> => {
+  let result: ResultAsync<void, StepValidationError> = okAsync(undefined);
+
+  for (const effect of step.effects ?? []) {
+    result = result.andThen(() =>
+      ResultAsync.fromPromise(evaluateEffect(effect, context), () =>
+        effectFailed(step, effect),
+      ).andThen((ok) => {
+        if (!ok) return errAsync(effectFailed(step, effect));
+        return okAsync(undefined);
+      }),
+    );
+  }
+
+  return result;
+};
+
+export const assertGuards = async (step: RecipeStep, context: GuardContext): Promise<void> => {
+  const result = await validateGuards(step, context);
+  if (result.isErr()) {
+    throw new Error(formatStepValidationError(result.error));
   }
 };
 
 export const assertEffects = async (step: RecipeStep, context: EffectContext): Promise<void> => {
-  for (const effect of step.effects ?? []) {
-    const ok = await evaluateEffect(effect, context);
-    if (!ok) {
-      throw new Error(`Effect failed: ${effect.type}=${effect.value} (step=${step.id})`);
-    }
+  const result = await validateEffects(step, context);
+  if (result.isErr()) {
+    throw new Error(formatStepValidationError(result.error));
   }
 };
