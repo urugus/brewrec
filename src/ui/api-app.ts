@@ -10,7 +10,7 @@ import {
 import { formatRecordStoreError, listRecordingsResult } from "../core/record-store.js";
 import { compileServiceResult } from "../services/compile-service.js";
 import { planServiceResult } from "../services/plan-service.js";
-import { startRecordSession } from "../services/record-service.js";
+import { isValidRecordingName, startRecordSession } from "../services/record-service.js";
 import { repairServiceResult } from "../services/repair-service.js";
 import { runServiceResult } from "../services/run-service.js";
 import { isValidRecipe } from "./recipe-validator.js";
@@ -174,6 +174,9 @@ export const createUiApiApp = (): Hono => {
     if (typeof name !== "string" || name.trim() === "") {
       return errorResponse(c, 400, "invalid_payload", "name is required");
     }
+    if (!isValidRecordingName(name)) {
+      return errorResponse(c, 400, "invalid_payload", "name contains invalid characters");
+    }
     if (typeof url !== "string" || url.trim() === "") {
       return errorResponse(c, 400, "invalid_payload", "url is required");
     }
@@ -191,6 +194,12 @@ export const createUiApiApp = (): Hono => {
         }
 
         const session = sessionResult.value;
+
+        // Stop the recording if the client disconnects
+        c.req.raw.signal.addEventListener("abort", () => {
+          void session.stop();
+        });
+
         const result = await session.done;
         if (result.isErr()) {
           sendSseError(sse, result.error.code, result.error.message);

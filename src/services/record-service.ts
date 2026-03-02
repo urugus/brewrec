@@ -35,6 +35,15 @@ export type RecordSession = {
 
 const nowIso = (): string => new Date().toISOString();
 
+/** Only allow safe identifiers as recording names (no path traversal). */
+const SAFE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
+
+export const isValidRecordingName = (name: string): boolean => {
+  if (!SAFE_NAME_RE.test(name)) return false;
+  if (name.includes("..")) return false;
+  return true;
+};
+
 /**
  * Start a recording session.
  *
@@ -48,6 +57,13 @@ export const startRecordSession = async (
   options: RecordServiceOptions = {},
 ): Promise<Result<RecordSession, ServiceError>> => {
   const progress = options.progress ?? nullReporter;
+
+  if (!isValidRecordingName(name)) {
+    return err({
+      code: "invalid_name",
+      message: "recording name must be alphanumeric (with ._-), max 128 chars, no path traversal",
+    });
+  }
 
   const initResult = await initRecordingResult(name);
   if (initResult.isErr()) {
@@ -75,10 +91,12 @@ export const startRecordSession = async (
   const appendEvent = async (recordName: string, event: RecordedEvent): Promise<void> => {
     const result = await appendRecordedEventResult(recordName, event);
     if (result.isErr()) {
-      asyncError = {
-        code: "recording_append_failed",
-        message: formatRecordStoreError(result.error),
-      };
+      if (!asyncError) {
+        asyncError = {
+          code: "recording_append_failed",
+          message: formatRecordStoreError(result.error),
+        };
+      }
     } else {
       eventCount++;
     }
@@ -182,7 +200,11 @@ export const startRecordSession = async (
         message: cause instanceof Error ? cause.message : String(cause),
       });
     } finally {
-      await browser.close();
+      try {
+        await browser.close();
+      } catch {
+        // browser may already be closed
+      }
     }
   })();
 

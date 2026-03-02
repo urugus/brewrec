@@ -179,6 +179,24 @@ describe("ui api app", () => {
     });
   });
 
+  it("returns 400 when record name contains path traversal", async () => {
+    const app = createUiApiApp();
+
+    const response = await app.request("http://localhost/record", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "../evil", url: "https://example.com" }),
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      code: "invalid_payload",
+      error: "name contains invalid characters",
+    });
+  });
+
   it("returns 400 when record body is empty", async () => {
     const app = createUiApiApp();
 

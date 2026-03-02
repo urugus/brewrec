@@ -365,9 +365,16 @@ function RecordPanel({
     setCompileComplete(false);
 
     try {
-      const res = await fetch(`/api/compile/${recordResult.name}`, {
+      const encodedName = encodeURIComponent(recordResult.name);
+      const res = await fetch(`/api/compile/${encodedName}`, {
         method: "POST",
       });
+
+      if (!res.ok || !res.body) {
+        const data = await parseJsonSafe(res);
+        setCompileError(asErrorMessage(data, "compile failed"));
+        return;
+      }
 
       let logIndex = 0;
       await consumeSseStream(res, {
