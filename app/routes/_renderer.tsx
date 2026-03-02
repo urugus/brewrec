@@ -194,6 +194,9 @@ button.secondary:disabled {
   color: #dc2626;
   background: #fef2f2;
 }
+.status-info {
+  color: var(--ink);
+}
 .status-loading {
   color: #b45309;
 }
@@ -426,14 +429,14 @@ button.secondary:disabled {
   flex-shrink: 0;
   animation: pulse 1.5s ease-in-out infinite;
 }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
 .record-status-help {
   font-size: 12px;
   color: #888;
   margin: 4px 0 0;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
 }
 .record-error {
   margin-top: 6px;

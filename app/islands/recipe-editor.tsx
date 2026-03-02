@@ -135,7 +135,6 @@ function VarsForm({
               </span>
               <input
                 type="text"
-                aria-label={`Variable: ${v.name}`}
                 value={vars[key] ?? v.defaultValue ?? ""}
                 placeholder={v.defaultValue ?? ""}
                 onInput={(event) => {
@@ -608,7 +607,6 @@ export default function RecipeEditor() {
   };
 
   const loadRecipeList = async (): Promise<void> => {
-    setRecipes([]);
     try {
       const res = await fetch("/api/recipes");
       const data = await parseJsonSafe(res);
