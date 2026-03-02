@@ -46,6 +46,8 @@ type ErrorPayload = {
   error?: string;
 };
 
+type StatusType = "info" | "success" | "error" | "loading";
+
 const asErrorMessage = (value: unknown, fallback: string): string => {
   if (
     value &&
@@ -89,6 +91,16 @@ const varKey = (v: RecipeVariable): string => {
   return v.resolver?.key ?? v.name;
 };
 
+const MODE_LABELS: Record<string, string> = {
+  pw: "browser",
+  http: "http",
+};
+
+const MODE_TITLES: Record<string, string> = {
+  pw: "Browser automation via Playwright",
+  http: "Direct HTTP request",
+};
+
 function VarsForm({
   variables,
   vars,
@@ -110,12 +122,20 @@ function VarsForm({
               <span class="var-label-text">
                 <span class="var-name">
                   {v.name}
-                  {v.required ? " *" : ""}
+                  {v.required ? (
+                    <span class="var-required" title="This variable is required">
+                      {" "}
+                      *
+                    </span>
+                  ) : (
+                    <span class="var-optional">(optional)</span>
+                  )}
                 </span>
                 {v.description ? <span class="var-desc">{v.description}</span> : null}
               </span>
               <input
                 type="text"
+                aria-label={`Variable: ${v.name}`}
                 value={vars[key] ?? v.defaultValue ?? ""}
                 placeholder={v.defaultValue ?? ""}
                 onInput={(event) => {
@@ -171,8 +191,12 @@ function PlanResultView({ plan }: { plan: PlanData }) {
         <ol>
           {plan.plan.steps.map((step) => (
             <li key={step.id} class="plan-step">
-              <span class="step-badge" data-mode={step.mode}>
-                {step.mode}
+              <span
+                class="step-badge"
+                data-mode={step.mode}
+                title={MODE_TITLES[step.mode] ?? step.mode}
+              >
+                {MODE_LABELS[step.mode] ?? step.mode}
               </span>
               <span class="step-badge" data-action={step.action}>
                 {step.action}
@@ -472,6 +496,7 @@ function RecordPanel({
         <input
           type="text"
           placeholder="Recording name"
+          aria-label="Recording name"
           value={recordName}
           disabled={recording}
           onInput={(event) => {
@@ -481,6 +506,7 @@ function RecordPanel({
         <input
           type="url"
           placeholder="https://example.com"
+          aria-label="Start URL for recording"
           value={recordUrl}
           disabled={recording}
           onInput={(event) => {
@@ -499,8 +525,11 @@ function RecordPanel({
       {recording ? (
         <div class="record-status">
           <div class="record-status-indicator">
-            Recording in progress - close the browser to stop
+            <span class="record-dot" /> Recording in progress
           </div>
+          <p class="record-status-help">
+            Interact with the browser that opened. When done, close it to finish recording.
+          </p>
         </div>
       ) : null}
       {recordError ? <div class="record-error">{recordError}</div> : null}
@@ -553,7 +582,8 @@ function RecordPanel({
 export default function RecipeEditor() {
   const [recipes, setRecipes] = useState<RecipeSummary[]>([]);
   const [editorText, setEditorText] = useState("");
-  const [status, setStatus] = useState("");
+  const [statusText, setStatusText] = useState("");
+  const [statusType, setStatusType] = useState<StatusType>("info");
   const [currentId, setCurrentId] = useState("");
   const [vars, setVars] = useState<Record<string, string>>({});
   const [planResult, setPlanResult] = useState<PlanData | null>(null);
@@ -568,6 +598,11 @@ export default function RecipeEditor() {
 
   const variables = useMemo(() => extractVariables(editorText), [editorText]);
 
+  const setStatus = (text: string, type: StatusType = "info"): void => {
+    setStatusText(text);
+    setStatusType(type);
+  };
+
   const handleVarChange = (key: string, value: string): void => {
     setVars((prev) => ({ ...prev, [key]: value }));
   };
@@ -578,16 +613,16 @@ export default function RecipeEditor() {
       const res = await fetch("/api/recipes");
       const data = await parseJsonSafe(res);
       if (!res.ok) {
-        setStatus(asErrorMessage(data, "failed to load recipes"));
+        setStatus(asErrorMessage(data, "failed to load recipes"), "error");
         return;
       }
       if (!Array.isArray(data)) {
-        setStatus("failed to load recipes");
+        setStatus("failed to load recipes", "error");
         return;
       }
       setRecipes(data as RecipeSummary[]);
     } catch {
-      setStatus("failed to load recipes");
+      setStatus("failed to load recipes", "error");
     }
   };
 
@@ -596,12 +631,12 @@ export default function RecipeEditor() {
       const res = await fetch(`/api/recipes/${id}`);
       const data = await parseJsonSafe(res);
       if (!res.ok) {
-        setStatus(asErrorMessage(data, "failed to open recipe"));
+        setStatus(asErrorMessage(data, "failed to open recipe"), "error");
         return;
       }
       setCurrentId(id);
       setEditorText(JSON.stringify(data, null, 2));
-      setStatus(`opened: ${id}`);
+      setStatus(`opened: ${id}`, "info");
       setVars({});
       setPlanResult(null);
       setRunLogs([]);
@@ -609,7 +644,7 @@ export default function RecipeEditor() {
       setDebugLogs([]);
       setDebugResult(null);
     } catch {
-      setStatus("failed to open recipe");
+      setStatus("failed to open recipe", "error");
     }
   };
 
@@ -636,13 +671,13 @@ export default function RecipeEditor() {
         body: JSON.stringify(payload),
       });
       if (res.ok) {
-        setStatus("saved");
+        setStatus("saved", "success");
         return;
       }
       const data = await parseJsonSafe(res);
-      setStatus(asErrorMessage(data, "save failed"));
+      setStatus(asErrorMessage(data, "save failed"), "error");
     } catch {
-      setStatus("invalid json");
+      setStatus("invalid json — fix syntax errors and try again", "error");
     }
   };
 
@@ -650,7 +685,7 @@ export default function RecipeEditor() {
     if (!currentId) return;
     setPlanLoading(true);
     setPlanResult(null);
-    setStatus("planning...");
+    setStatus("planning...", "loading");
     try {
       const validKeys = new Set(variables.map((v) => varKey(v)));
       const filteredVars: Record<string, string> = {};
@@ -666,13 +701,13 @@ export default function RecipeEditor() {
       });
       const data = await parseJsonSafe(res);
       if (!res.ok) {
-        setStatus(asErrorMessage(data, "plan failed"));
+        setStatus(asErrorMessage(data, "plan failed"), "error");
         return;
       }
       setPlanResult(data as PlanData);
-      setStatus("plan ready");
+      setStatus("plan ready", "success");
     } catch {
-      setStatus("plan failed");
+      setStatus("plan failed", "error");
     } finally {
       setPlanLoading(false);
     }
@@ -684,7 +719,7 @@ export default function RecipeEditor() {
     setRunLogs([]);
     setRunResult(null);
     const label = healEnabled ? "running (heal)..." : "running...";
-    setStatus(label);
+    setStatus(label, "loading");
 
     try {
       const validKeys = new Set(variables.map((v) => varKey(v)));
@@ -705,7 +740,7 @@ export default function RecipeEditor() {
       });
 
       if (!res.ok || !res.body) {
-        setStatus("run failed");
+        setStatus("run failed", "error");
         setRunLoading(false);
         return;
       }
@@ -720,18 +755,21 @@ export default function RecipeEditor() {
         onDone: (data) => {
           const result = data as RunResultData;
           setRunResult(result);
-          setStatus(result.ok ? "run completed" : `run failed: ${result.error ?? "unknown"}`);
+          setStatus(
+            result.ok ? "run completed" : `run failed: ${result.error ?? "unknown"}`,
+            result.ok ? "success" : "error",
+          );
           if (result.ok && healEnabled) {
             void reloadCurrentRecipe();
           }
         },
         onError: (data) => {
           const error = data as { error?: string };
-          setStatus(`run error: ${error.error ?? "unknown"}`);
+          setStatus(`run error: ${error.error ?? "unknown"}`, "error");
         },
       });
     } catch {
-      setStatus("run failed");
+      setStatus("run failed", "error");
     } finally {
       setRunLoading(false);
     }
@@ -742,7 +780,7 @@ export default function RecipeEditor() {
     setDebugLoading(true);
     setDebugLogs([]);
     setDebugResult(null);
-    setStatus("debugging...");
+    setStatus("debugging...", "loading");
 
     try {
       const validKeys = new Set(variables.map((v) => varKey(v)));
@@ -762,7 +800,7 @@ export default function RecipeEditor() {
       });
 
       if (!res.ok || !res.body) {
-        setStatus("debug failed");
+        setStatus("debug failed", "error");
         setDebugLoading(false);
         return;
       }
@@ -777,15 +815,18 @@ export default function RecipeEditor() {
         onDone: (data) => {
           const result = data as DebugResultData;
           setDebugResult(result);
-          setStatus(result.ok ? "debug completed" : `debug failed: ${result.error ?? "unknown"}`);
+          setStatus(
+            result.ok ? "debug completed" : `debug failed: ${result.error ?? "unknown"}`,
+            result.ok ? "success" : "error",
+          );
         },
         onError: (data) => {
           const error = data as { error?: string };
-          setStatus(`debug error: ${error.error ?? "unknown"}`);
+          setStatus(`debug error: ${error.error ?? "unknown"}`, "error");
         },
       });
     } catch {
-      setStatus("debug failed");
+      setStatus("debug failed", "error");
     } finally {
       setDebugLoading(false);
     }
@@ -804,26 +845,52 @@ export default function RecipeEditor() {
     <main>
       <section class="panel">
         <h1>Recipes</h1>
-        <ul>
-          {recipes.map((recipe) => (
-            <li key={recipe.id}>
-              <button type="button" onClick={() => void openRecipe(recipe.id)}>
-                {recipe.id} v{recipe.version}
-              </button>
-            </li>
-          ))}
-        </ul>
+        {recipes.length === 0 ? (
+          <div class="empty-state">
+            <p class="empty-state-desc">
+              No recipes yet. Create your first recipe by recording a browser session below.
+            </p>
+          </div>
+        ) : (
+          <ul aria-label="Recipe list">
+            {recipes.map((recipe) => (
+              <li key={recipe.id}>
+                <button
+                  type="button"
+                  class={currentId === recipe.id ? "recipe-item-active" : ""}
+                  aria-label={`Open recipe ${recipe.id} version ${recipe.version}`}
+                  onClick={() => void openRecipe(recipe.id)}
+                >
+                  <span class="recipe-item-name">{recipe.id}</span>
+                  <span class="recipe-item-meta">
+                    v{recipe.version} &middot; {recipe.steps} steps
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <RecordPanel onRecordingComplete={handleRecordingComplete} />
       </section>
-      <section class="panel">
+      <section class="panel editor-panel">
+        <h2 class="editor-title">{currentId || "Recipe Editor"}</h2>
         <div class="row">
-          <button id="saveBtn" class="primary" type="button" onClick={() => void saveRecipe()}>
+          <button
+            id="saveBtn"
+            class="primary"
+            type="button"
+            title="Save changes to the recipe JSON"
+            disabled={!currentId}
+            onClick={() => void saveRecipe()}
+          >
             Save
           </button>
+          <span class="row-divider" />
           <button
             id="planBtn"
             class="secondary"
             type="button"
+            title="Preview the execution plan and resolved variables"
             disabled={!currentId || planLoading}
             onClick={() => void executePlan()}
           >
@@ -833,6 +900,7 @@ export default function RecipeEditor() {
             id="runBtn"
             class="primary"
             type="button"
+            title="Execute the recipe in headless browser mode"
             disabled={!currentId || runLoading}
             onClick={() => void executeRun()}
           >
@@ -842,12 +910,16 @@ export default function RecipeEditor() {
             id="debugBtn"
             class="secondary"
             type="button"
+            title="Execute step-by-step with video recording"
             disabled={!currentId || debugLoading}
             onClick={() => void executeDebug()}
           >
             {debugLoading ? "Debugging..." : "Debug"}
           </button>
-          <label class="heal-toggle">
+          <label
+            class="heal-toggle"
+            title="Auto-fix broken selectors during run. Updates the recipe after successful execution."
+          >
             <input
               type="checkbox"
               checked={healEnabled}
@@ -855,19 +927,41 @@ export default function RecipeEditor() {
                 setHealEnabled((event.target as HTMLInputElement).checked);
               }}
             />
-            <span>Heal</span>
+            <span>Auto-heal</span>
           </label>
-          <span id="status">{status}</span>
+          <output id="status" class={`status-text status-${statusType}`}>
+            {statusType === "loading" ? <span class="status-spinner" /> : null}
+            {statusText}
+          </output>
         </div>
         <VarsForm variables={variables} vars={vars} onVarsChange={handleVarChange} />
-        <textarea
-          id="editor"
-          placeholder="Select recipe"
-          value={editorText}
-          onInput={(event) => {
-            setEditorText((event.target as HTMLTextAreaElement).value);
-          }}
-        />
+        {currentId ? (
+          <textarea
+            id="editor"
+            aria-label="Recipe JSON editor"
+            placeholder="Select recipe"
+            value={editorText}
+            onInput={(event) => {
+              setEditorText((event.target as HTMLTextAreaElement).value);
+            }}
+          />
+        ) : (
+          <div class="editor-empty-state">
+            <p class="editor-empty-title">Select a recipe to get started</p>
+            <p class="editor-empty-desc">
+              Choose a recipe from the left panel, or record a new browser session.
+            </p>
+            <div class="workflow-steps">
+              <span class="workflow-step">Record</span>
+              <span class="workflow-arrow">&rarr;</span>
+              <span class="workflow-step">Compile</span>
+              <span class="workflow-arrow">&rarr;</span>
+              <span class="workflow-step">Plan</span>
+              <span class="workflow-arrow">&rarr;</span>
+              <span class="workflow-step">Run</span>
+            </div>
+          </div>
+        )}
         {planResult ? <PlanResultView plan={planResult} /> : null}
         <RunLogView logs={runLogs} result={runResult} />
         <DebugLogView logs={debugLogs} result={debugResult} />

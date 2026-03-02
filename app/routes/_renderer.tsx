@@ -46,6 +46,35 @@ li button {
   background: white;
   padding: 10px;
   cursor: pointer;
+  transition: border-color 0.15s;
+}
+li button:hover {
+  border-color: var(--accent);
+}
+li button.recipe-item-active {
+  border-color: var(--accent);
+  background: #f0faf9;
+}
+.recipe-item-name {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+}
+.recipe-item-meta {
+  display: block;
+  font-size: 11px;
+  color: #888;
+  margin-top: 2px;
+}
+.empty-state {
+  padding: 12px;
+  text-align: center;
+}
+.empty-state-desc {
+  font-size: 13px;
+  color: #888;
+  margin: 0;
+  line-height: 1.5;
 }
 textarea {
   width: 100%;
@@ -60,6 +89,13 @@ textarea {
   display: flex;
   gap: 8px;
   margin-bottom: 8px;
+  align-items: center;
+}
+.row-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  flex-shrink: 0;
 }
 button.primary {
   background: var(--accent);
@@ -77,10 +113,7 @@ button.secondary {
   padding: 8px 12px;
   cursor: pointer;
 }
-button.primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+button.primary:disabled,
 button.secondary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -95,6 +128,87 @@ button.secondary:disabled {
 }
 .heal-toggle input[type="checkbox"] {
   accent-color: var(--accent);
+}
+.editor-panel {
+  display: flex;
+  flex-direction: column;
+}
+.editor-title {
+  font-size: 16px;
+  margin: 0 0 8px;
+  color: var(--ink);
+}
+.editor-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  border: 2px dashed var(--line);
+  border-radius: 8px;
+  padding: 32px;
+  text-align: center;
+  color: #888;
+}
+.editor-empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  color: var(--ink);
+}
+.editor-empty-desc {
+  font-size: 13px;
+  margin: 0 0 20px;
+}
+.workflow-steps {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.workflow-step {
+  background: var(--accent);
+  color: white;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-weight: 600;
+}
+.workflow-arrow {
+  color: #aaa;
+  font-size: 16px;
+}
+.status-text {
+  font-size: 13px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.status-success {
+  color: var(--accent);
+  background: #f0faf9;
+}
+.status-error {
+  color: #dc2626;
+  background: #fef2f2;
+}
+.status-loading {
+  color: #b45309;
+}
+.status-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 .vars-form {
   margin-bottom: 10px;
@@ -122,6 +236,16 @@ button.secondary:disabled {
 }
 .var-name {
   font-weight: 600;
+}
+.var-required {
+  color: #dc2626;
+  font-weight: 700;
+}
+.var-optional {
+  color: #aaa;
+  font-size: 11px;
+  font-weight: 400;
+  margin-left: 4px;
 }
 .var-desc {
   color: #888;
@@ -289,7 +413,23 @@ button.secondary:disabled {
   font-size: 13px;
   color: var(--accent);
   font-weight: 600;
+  display: flex;
+  align-items: center;
+}
+.record-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #dc2626;
+  margin-right: 6px;
+  flex-shrink: 0;
   animation: pulse 1.5s ease-in-out infinite;
+}
+.record-status-help {
+  font-size: 12px;
+  color: #888;
+  margin: 4px 0 0;
 }
 @keyframes pulse {
   0%, 100% { opacity: 1; }
