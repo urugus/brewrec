@@ -7,6 +7,35 @@ type RecipeSummary = {
   version: number;
 };
 
+type RecipeVariable = {
+  name: string;
+  description?: string;
+  required?: boolean;
+  type?: string;
+  defaultValue?: string;
+};
+
+type PlanStep = {
+  id: string;
+  title: string;
+  mode: string;
+  action: string;
+  url?: string;
+};
+
+type PlanData = {
+  name: string;
+  version: number;
+  plan: {
+    now: string;
+    resolvedVars: Record<string, string>;
+    unresolvedVars: string[];
+    warnings: string[];
+    steps: PlanStep[];
+  };
+  downloadDir?: string;
+};
+
 type ErrorPayload = {
   error?: string;
 };
@@ -31,11 +60,123 @@ const parseJsonSafe = async (res: Response): Promise<unknown> => {
   }
 };
 
+const extractVariables = (editorText: string): RecipeVariable[] => {
+  try {
+    const recipe = JSON.parse(editorText);
+    if (Array.isArray(recipe?.variables)) {
+      return recipe.variables as RecipeVariable[];
+    }
+  } catch {
+    /* ignore */
+  }
+  return [];
+};
+
+function VarsForm({
+  variables,
+  vars,
+  onVarsChange,
+}: {
+  variables: RecipeVariable[];
+  vars: Record<string, string>;
+  onVarsChange: (vars: Record<string, string>) => void;
+}) {
+  if (variables.length === 0) return null;
+  return (
+    <div class="vars-form">
+      <h3>Variables</h3>
+      {variables.map((v) => (
+        <div key={v.name} class="var-field">
+          <label>
+            <span class="var-label-text">
+              <span class="var-name">
+                {v.name}
+                {v.required ? " *" : ""}
+              </span>
+              {v.description ? <span class="var-desc">{v.description}</span> : null}
+            </span>
+            <input
+              type="text"
+              value={vars[v.name] ?? v.defaultValue ?? ""}
+              placeholder={v.defaultValue ?? ""}
+              onInput={(event) => {
+                const value = (event.target as HTMLInputElement).value;
+                onVarsChange({ ...vars, [v.name]: value });
+              }}
+            />
+          </label>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PlanResultView({ plan }: { plan: PlanData }) {
+  return (
+    <div class="plan-result">
+      <h3>
+        Execution Plan: {plan.name} v{plan.version}
+      </h3>
+      <div class="plan-meta">
+        <span>Generated: {plan.plan.now}</span>
+        {plan.downloadDir ? <span>Download dir: {plan.downloadDir}</span> : null}
+      </div>
+      {Object.keys(plan.plan.resolvedVars).length > 0 ? (
+        <div class="plan-vars">
+          <h4>Resolved Variables</h4>
+          <table>
+            <tbody>
+              {Object.entries(plan.plan.resolvedVars).map(([k, v]) => (
+                <tr key={k}>
+                  <td class="var-key">{k}</td>
+                  <td>{v}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {plan.plan.warnings.length > 0 ? (
+        <div class="plan-warnings">
+          <h4>Warnings</h4>
+          <ul>
+            {plan.plan.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <div class="plan-steps">
+        <h4>Steps ({plan.plan.steps.length})</h4>
+        <ol>
+          {plan.plan.steps.map((step) => (
+            <li key={step.id} class="plan-step">
+              <span class="step-badge" data-mode={step.mode}>
+                {step.mode}
+              </span>
+              <span class="step-badge" data-action={step.action}>
+                {step.action}
+              </span>
+              <span class="step-title">{step.title}</span>
+              {step.url ? <span class="step-url">{step.url}</span> : null}
+            </li>
+          ))}
+        </ol>
+      </div>
+    </div>
+  );
+}
+
 export default function RecipeEditor() {
   const [recipes, setRecipes] = useState<RecipeSummary[]>([]);
   const [editorText, setEditorText] = useState("");
   const [status, setStatus] = useState("");
   const [currentId, setCurrentId] = useState("");
+  const [vars, setVars] = useState<Record<string, string>>({});
+  const [planResult, setPlanResult] = useState<PlanData | null>(null);
+  const [planLoading, setPlanLoading] = useState(false);
+
+  const variables = extractVariables(editorText);
 
   const loadRecipeList = async (): Promise<void> => {
     setRecipes([]);
@@ -67,6 +208,8 @@ export default function RecipeEditor() {
       setCurrentId(id);
       setEditorText(JSON.stringify(data, null, 2));
       setStatus(`opened: ${id}`);
+      setVars({});
+      setPlanResult(null);
     } catch {
       setStatus("failed to open recipe");
     }
@@ -89,6 +232,37 @@ export default function RecipeEditor() {
       setStatus(asErrorMessage(data, "save failed"));
     } catch {
       setStatus("invalid json");
+    }
+  };
+
+  const executePlan = async (): Promise<void> => {
+    if (!currentId) return;
+    setPlanLoading(true);
+    setPlanResult(null);
+    setStatus("planning...");
+    try {
+      const filteredVars: Record<string, string> = {};
+      for (const [k, v] of Object.entries(vars)) {
+        if (v !== "") filteredVars[k] = v;
+      }
+      const body =
+        Object.keys(filteredVars).length > 0 ? JSON.stringify({ vars: filteredVars }) : undefined;
+      const res = await fetch(`/api/plan/${currentId}`, {
+        method: "POST",
+        headers: body ? { "Content-Type": "application/json" } : {},
+        body,
+      });
+      const data = await parseJsonSafe(res);
+      if (!res.ok) {
+        setStatus(asErrorMessage(data, "plan failed"));
+        return;
+      }
+      setPlanResult(data as PlanData);
+      setStatus("plan ready");
+    } catch {
+      setStatus("plan failed");
+    } finally {
+      setPlanLoading(false);
     }
   };
 
@@ -115,8 +289,18 @@ export default function RecipeEditor() {
           <button id="saveBtn" class="primary" type="button" onClick={() => void saveRecipe()}>
             Save
           </button>
+          <button
+            id="planBtn"
+            class="secondary"
+            type="button"
+            disabled={!currentId || planLoading}
+            onClick={() => void executePlan()}
+          >
+            {planLoading ? "Planning..." : "Plan"}
+          </button>
           <span id="status">{status}</span>
         </div>
+        <VarsForm variables={variables} vars={vars} onVarsChange={setVars} />
         <textarea
           id="editor"
           placeholder="Select recipe"
@@ -125,6 +309,7 @@ export default function RecipeEditor() {
             setEditorText((event.target as HTMLTextAreaElement).value);
           }}
         />
+        {planResult ? <PlanResultView plan={planResult} /> : null}
       </section>
     </main>
   );

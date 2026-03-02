@@ -69,6 +69,139 @@ button.primary {
   padding: 8px 12px;
   cursor: pointer;
 }
+button.secondary {
+  background: white;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+button.secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.vars-form {
+  margin-bottom: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #faf8f2;
+}
+.vars-form h3 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+.var-field {
+  margin-bottom: 6px;
+}
+.var-field label {
+  display: block;
+  font-size: 13px;
+}
+.var-label-text {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.var-name {
+  font-weight: 600;
+}
+.var-desc {
+  color: #888;
+  font-size: 12px;
+}
+.var-field input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.plan-result {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: #f0faf9;
+}
+.plan-result h3 {
+  font-size: 15px;
+  margin: 0 0 8px;
+  color: var(--accent);
+}
+.plan-result h4 {
+  font-size: 13px;
+  margin: 10px 0 4px;
+}
+.plan-meta {
+  font-size: 12px;
+  color: #666;
+  display: flex;
+  gap: 16px;
+  margin-bottom: 6px;
+}
+.plan-vars table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+.plan-vars td {
+  padding: 2px 8px 2px 0;
+  border-bottom: 1px solid var(--line);
+}
+.plan-vars .var-key {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.plan-warnings ul {
+  padding-left: 18px;
+  margin: 4px 0;
+  font-size: 12px;
+  color: #b45309;
+}
+.plan-steps ol {
+  padding-left: 22px;
+  margin: 4px 0;
+}
+.plan-step {
+  margin-bottom: 4px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.step-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-right: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.step-badge[data-mode="pw"] {
+  background: #dbeafe;
+  color: #1e40af;
+}
+.step-badge[data-mode="http"] {
+  background: #fef3c7;
+  color: #92400e;
+}
+.step-badge[data-action] {
+  background: #e5e7eb;
+  color: #374151;
+}
+.step-title {
+  font-weight: 500;
+}
+.step-url {
+  display: block;
+  font-size: 11px;
+  color: #888;
+  word-break: break-all;
+  margin-left: 4px;
+}
 @media (max-width: 900px) {
   main {
     grid-template-columns: 1fr;
