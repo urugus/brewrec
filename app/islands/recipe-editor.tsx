@@ -1,4 +1,4 @@
-import { useEffect, useState } from "hono/jsx";
+import { useEffect, useMemo, useState } from "hono/jsx";
 
 type RecipeSummary = {
   id: string;
@@ -7,12 +7,18 @@ type RecipeSummary = {
   version: number;
 };
 
+type VariableResolver = {
+  type: string;
+  key?: string;
+};
+
 type RecipeVariable = {
   name: string;
   description?: string;
   required?: boolean;
   type?: string;
   defaultValue?: string;
+  resolver?: VariableResolver;
 };
 
 type PlanStep = {
@@ -64,12 +70,23 @@ const extractVariables = (editorText: string): RecipeVariable[] => {
   try {
     const recipe = JSON.parse(editorText);
     if (Array.isArray(recipe?.variables)) {
-      return recipe.variables as RecipeVariable[];
+      const seen = new Set<string>();
+      return (recipe.variables as RecipeVariable[]).filter((v) => {
+        if (!v || typeof v.name !== "string" || v.name === "") return false;
+        if (seen.has(v.name)) return false;
+        seen.add(v.name);
+        return true;
+      });
     }
   } catch {
     /* ignore */
   }
   return [];
+};
+
+/** Return the key used by the backend to resolve a CLI variable. */
+const varKey = (v: RecipeVariable): string => {
+  return v.resolver?.key ?? v.name;
 };
 
 function VarsForm({
@@ -79,34 +96,37 @@ function VarsForm({
 }: {
   variables: RecipeVariable[];
   vars: Record<string, string>;
-  onVarsChange: (vars: Record<string, string>) => void;
+  onVarsChange: (name: string, value: string) => void;
 }) {
   if (variables.length === 0) return null;
   return (
     <div class="vars-form">
       <h3>Variables</h3>
-      {variables.map((v) => (
-        <div key={v.name} class="var-field">
-          <label>
-            <span class="var-label-text">
-              <span class="var-name">
-                {v.name}
-                {v.required ? " *" : ""}
+      {variables.map((v) => {
+        const key = varKey(v);
+        return (
+          <div key={v.name} class="var-field">
+            <label>
+              <span class="var-label-text">
+                <span class="var-name">
+                  {v.name}
+                  {v.required ? " *" : ""}
+                </span>
+                {v.description ? <span class="var-desc">{v.description}</span> : null}
               </span>
-              {v.description ? <span class="var-desc">{v.description}</span> : null}
-            </span>
-            <input
-              type="text"
-              value={vars[v.name] ?? v.defaultValue ?? ""}
-              placeholder={v.defaultValue ?? ""}
-              onInput={(event) => {
-                const value = (event.target as HTMLInputElement).value;
-                onVarsChange({ ...vars, [v.name]: value });
-              }}
-            />
-          </label>
-        </div>
-      ))}
+              <input
+                type="text"
+                value={vars[key] ?? v.defaultValue ?? ""}
+                placeholder={v.defaultValue ?? ""}
+                onInput={(event) => {
+                  const value = (event.target as HTMLInputElement).value;
+                  onVarsChange(key, value);
+                }}
+              />
+            </label>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -141,7 +161,7 @@ function PlanResultView({ plan }: { plan: PlanData }) {
           <h4>Warnings</h4>
           <ul>
             {plan.plan.warnings.map((w) => (
-              <li key={w}>{w}</li>
+              <li key={`warn-${w}`}>{w}</li>
             ))}
           </ul>
         </div>
@@ -176,7 +196,11 @@ export default function RecipeEditor() {
   const [planResult, setPlanResult] = useState<PlanData | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
 
-  const variables = extractVariables(editorText);
+  const variables = useMemo(() => extractVariables(editorText), [editorText]);
+
+  const handleVarChange = (key: string, value: string): void => {
+    setVars((prev) => ({ ...prev, [key]: value }));
+  };
 
   const loadRecipeList = async (): Promise<void> => {
     setRecipes([]);
@@ -241,9 +265,10 @@ export default function RecipeEditor() {
     setPlanResult(null);
     setStatus("planning...");
     try {
+      const validKeys = new Set(variables.map((v) => varKey(v)));
       const filteredVars: Record<string, string> = {};
       for (const [k, v] of Object.entries(vars)) {
-        if (v !== "") filteredVars[k] = v;
+        if (v !== "" && validKeys.has(k)) filteredVars[k] = v;
       }
       const body =
         Object.keys(filteredVars).length > 0 ? JSON.stringify({ vars: filteredVars }) : undefined;
@@ -300,7 +325,7 @@ export default function RecipeEditor() {
           </button>
           <span id="status">{status}</span>
         </div>
-        <VarsForm variables={variables} vars={vars} onVarsChange={setVars} />
+        <VarsForm variables={variables} vars={vars} onVarsChange={handleVarChange} />
         <textarea
           id="editor"
           placeholder="Select recipe"
