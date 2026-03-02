@@ -34,8 +34,10 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
-    define: {
-      "process.env": "process.env",
+    server: {
+      watch: {
+        ignored: ["**/recordings/**", "**/artifacts/**", "**/secrets/**"],
+      },
     },
     ssr: {
       external: ["playwright", "playwright-core"],
