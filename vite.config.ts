@@ -37,6 +37,9 @@ export default defineConfig(({ mode }) => {
     define: {
       "process.env": "process.env",
     },
+    ssr: {
+      external: ["playwright", "playwright-core"],
+    },
     plugins: [
       createHonoxPlugin(),
       build({
