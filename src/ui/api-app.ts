@@ -192,12 +192,13 @@ export const createUiApiApp = (): Hono => {
     }
     const vars = isObject(parsedBody.body) ? parsedBody.body.vars : undefined;
     const varStrings = parseVarsBody(vars);
+    const heal = isObject(parsedBody.body) ? parsedBody.body.heal === true : false;
     const sse = createSseConnection();
     const progress = sseReporter(sse);
 
     void (async () => {
       try {
-        const result = await runServiceResult(name, { vars: varStrings, progress });
+        const result = await runServiceResult(name, { vars: varStrings, heal, progress });
         if (result.isErr()) {
           sendSseError(sse, result.error.code, result.error.message);
         } else {

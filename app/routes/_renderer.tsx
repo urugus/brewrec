@@ -77,9 +77,24 @@ button.secondary {
   padding: 8px 12px;
   cursor: pointer;
 }
+button.primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 button.secondary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+.heal-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+.heal-toggle input[type="checkbox"] {
+  accent-color: var(--accent);
 }
 .vars-form {
   margin-bottom: 10px;
@@ -201,6 +216,46 @@ button.secondary:disabled {
   color: #888;
   word-break: break-all;
   margin-left: 4px;
+}
+.run-log {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #faf8f2;
+}
+.run-log-ok {
+  border-color: var(--accent);
+  background: #f0faf9;
+}
+.run-log-fail {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+.run-log h3 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+.run-result-summary {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.run-log-entries {
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.run-log-entry {
+  padding: 2px 0;
+  color: #555;
+}
+.run-log-entry[data-type="warn"] {
+  color: #b45309;
+}
+.run-log-entry[data-type="step_failed"] {
+  color: #dc2626;
 }
 @media (max-width: 900px) {
   main {

@@ -187,6 +187,44 @@ function PlanResultView({ plan }: { plan: PlanData }) {
   );
 }
 
+type RunLogEntry = {
+  key: string;
+  type: string;
+  message: string;
+};
+
+type RunResultData = {
+  name: string;
+  version: number;
+  ok: boolean;
+  phase: string;
+  error?: string;
+};
+
+function RunLogView({ logs, result }: { logs: RunLogEntry[]; result: RunResultData | null }) {
+  if (logs.length === 0 && !result) return null;
+  return (
+    <div class={`run-log ${result ? (result.ok ? "run-log-ok" : "run-log-fail") : ""}`}>
+      <h3>Run Log</h3>
+      {result ? (
+        <div class="run-result-summary">
+          {result.ok ? "Completed" : "Failed"}
+          {" - "}
+          {result.name} v{result.version}
+          {result.error ? `: ${result.error}` : ""}
+        </div>
+      ) : null}
+      <div class="run-log-entries">
+        {logs.map((entry) => (
+          <div key={entry.key} class="run-log-entry" data-type={entry.type}>
+            {entry.message}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function RecipeEditor() {
   const [recipes, setRecipes] = useState<RecipeSummary[]>([]);
   const [editorText, setEditorText] = useState("");
@@ -195,6 +233,10 @@ export default function RecipeEditor() {
   const [vars, setVars] = useState<Record<string, string>>({});
   const [planResult, setPlanResult] = useState<PlanData | null>(null);
   const [planLoading, setPlanLoading] = useState(false);
+  const [healEnabled, setHealEnabled] = useState(false);
+  const [runLoading, setRunLoading] = useState(false);
+  const [runLogs, setRunLogs] = useState<RunLogEntry[]>([]);
+  const [runResult, setRunResult] = useState<RunResultData | null>(null);
 
   const variables = useMemo(() => extractVariables(editorText), [editorText]);
 
@@ -234,6 +276,8 @@ export default function RecipeEditor() {
       setStatus(`opened: ${id}`);
       setVars({});
       setPlanResult(null);
+      setRunLogs([]);
+      setRunResult(null);
     } catch {
       setStatus("failed to open recipe");
     }
@@ -291,6 +335,91 @@ export default function RecipeEditor() {
     }
   };
 
+  const executeRun = async (): Promise<void> => {
+    if (!currentId) return;
+    setRunLoading(true);
+    setRunLogs([]);
+    setRunResult(null);
+    const label = healEnabled ? "running (heal)..." : "running...";
+    setStatus(label);
+
+    try {
+      const validKeys = new Set(variables.map((v) => varKey(v)));
+      const filteredVars: Record<string, string> = {};
+      for (const [k, v] of Object.entries(vars)) {
+        if (v !== "" && validKeys.has(k)) filteredVars[k] = v;
+      }
+
+      const payload: Record<string, unknown> = {};
+      if (Object.keys(filteredVars).length > 0) payload.vars = filteredVars;
+      if (healEnabled) payload.heal = true;
+
+      const hasPayload = Object.keys(payload).length > 0;
+      const res = await fetch(`/api/run/${currentId}`, {
+        method: "POST",
+        headers: hasPayload ? { "Content-Type": "application/json" } : {},
+        body: hasPayload ? JSON.stringify(payload) : undefined,
+      });
+
+      if (!res.ok || !res.body) {
+        setStatus("run failed");
+        setRunLoading(false);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let logIndex = 0;
+
+      const processChunk = (chunk: string): void => {
+        buffer += chunk;
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+
+        for (const part of parts) {
+          const lines = part.split("\n");
+          const eventLine = lines.find((l) => l.startsWith("event: "));
+          const dataLine = lines.find((l) => l.startsWith("data: "));
+          if (!eventLine || !dataLine) continue;
+
+          const eventType = eventLine.slice("event: ".length);
+          let data: unknown;
+          try {
+            data = JSON.parse(dataLine.slice("data: ".length));
+          } catch {
+            continue;
+          }
+
+          if (eventType === "progress" && data && typeof data === "object") {
+            const event = data as { type: string; message?: string };
+            const message = event.message ?? event.type;
+            logIndex++;
+            setRunLogs((prev) => [...prev, { key: `log-${logIndex}`, type: event.type, message }]);
+          } else if (eventType === "done" && data && typeof data === "object") {
+            setRunResult(data as RunResultData);
+            const result = data as RunResultData;
+            setStatus(result.ok ? "run completed" : `run failed: ${result.error ?? "unknown"}`);
+          } else if (eventType === "error" && data && typeof data === "object") {
+            const error = data as { error?: string };
+            setStatus(`run error: ${error.error ?? "unknown"}`);
+          }
+        }
+      };
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        processChunk(decoder.decode(value, { stream: true }));
+      }
+      processChunk(decoder.decode());
+    } catch {
+      setStatus("run failed");
+    } finally {
+      setRunLoading(false);
+    }
+  };
+
   useEffect(() => {
     void loadRecipeList();
   }, []);
@@ -323,6 +452,25 @@ export default function RecipeEditor() {
           >
             {planLoading ? "Planning..." : "Plan"}
           </button>
+          <button
+            id="runBtn"
+            class="primary"
+            type="button"
+            disabled={!currentId || runLoading}
+            onClick={() => void executeRun()}
+          >
+            {runLoading ? "Running..." : "Run"}
+          </button>
+          <label class="heal-toggle">
+            <input
+              type="checkbox"
+              checked={healEnabled}
+              onChange={(event) => {
+                setHealEnabled((event.target as HTMLInputElement).checked);
+              }}
+            />
+            <span>Heal</span>
+          </label>
           <span id="status">{status}</span>
         </div>
         <VarsForm variables={variables} vars={vars} onVarsChange={handleVarChange} />
@@ -335,6 +483,7 @@ export default function RecipeEditor() {
           }}
         />
         {planResult ? <PlanResultView plan={planResult} /> : null}
+        <RunLogView logs={runLogs} result={runResult} />
       </section>
     </main>
   );

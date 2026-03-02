@@ -665,6 +665,147 @@ export const runPlanSteps = async (
   }
 };
 
+export type AutoHealRunResult = {
+  lastUrl: string | undefined;
+  phase1Healed: number;
+  /** stepId -> new selectors to prepend */
+  selectorPatches: Map<string, string[]>;
+};
+
+/**
+ * Run plan steps with Phase 1 auto-heal only (heuristic + LLM selector repair).
+ * Unlike `runPlanStepsWithHeal`, this does NOT support Phase 2 re-recording
+ * and is suitable for headless / server-side use (e.g. GUI).
+ */
+export const runPlanStepsWithAutoHeal = async (
+  steps: RecipeStep[],
+  llmCommand: string,
+  downloadDir: string,
+): Promise<Result<AutoHealRunResult, RunExecuteError>> => {
+  const selectorPatches = new Map<string, string[]>();
+  let phase1Healed = 0;
+
+  const hasPwStep = steps.some((step) => step.mode === "pw");
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
+  let pwContext: BrowserContext | null = null;
+  let page: Page | null = null;
+  let httpContext: APIRequestContext | undefined;
+
+  try {
+    if (hasPwStep) {
+      browser = await chromium.launch({ headless: true });
+      pwContext = await browser.newContext({ acceptDownloads: true });
+      page = await pwContext.newPage();
+      setupDownloadHandler(page, downloadDir);
+    }
+
+    let pageUrl: string | undefined;
+    let httpUrl: string | undefined;
+    let previousStepMode: RecipeStep["mode"] | undefined;
+
+    for (const step of steps) {
+      if (step.mode === "http") {
+        if (!httpContext || previousStepMode !== "http") {
+          if (httpContext) {
+            try {
+              await httpContext.dispose();
+            } catch (cause) {
+              return err({
+                kind: "step_execution_failed",
+                stepId: step.id,
+                message: causeMessage(cause),
+              });
+            }
+          }
+          try {
+            const maybeStorage = pwContext ? await pwContext.storageState() : undefined;
+            httpContext = await request.newContext(
+              maybeStorage ? { storageState: maybeStorage } : undefined,
+            );
+          } catch (cause) {
+            return err({
+              kind: "step_execution_failed",
+              stepId: step.id,
+              message: causeMessage(cause),
+            });
+          }
+        }
+        const httpStepResult = await runHttpStepResult(
+          httpContext,
+          step,
+          pageUrl ?? httpUrl,
+          httpUrl ?? pageUrl,
+          downloadDir,
+          true,
+        );
+        if (httpStepResult.isErr()) return err(httpStepResult.error);
+        httpUrl = httpStepResult.value;
+        previousStepMode = "http";
+        continue;
+      }
+
+      if (!page) {
+        return err({
+          kind: "context_unavailable",
+          stepId: step.id,
+          message: `Playwright page is not available for step ${step.id}`,
+        });
+      }
+
+      if (httpContext) {
+        try {
+          await syncHttpCookiesToBrowserContext(pwContext, httpContext);
+          await httpContext.dispose();
+          httpContext = undefined;
+        } catch (cause) {
+          return err({
+            kind: "step_execution_failed",
+            stepId: step.id,
+            message: causeMessage(cause),
+          });
+        }
+      }
+
+      const result = await executePwStepWithHealResult(page, step, pageUrl, llmCommand);
+      if (result.isErr()) return err(result.error);
+
+      pageUrl = result.value.currentUrl;
+      if (result.value.healed && result.value.patchSelectors) {
+        selectorPatches.set(step.id, result.value.patchSelectors);
+        phase1Healed++;
+      }
+      previousStepMode = "pw";
+    }
+
+    return ok({
+      lastUrl: pageUrl ?? httpUrl ?? page?.url(),
+      phase1Healed,
+      selectorPatches,
+    });
+  } catch (cause) {
+    return err({
+      kind: "unexpected_error",
+      phase: "run_heal",
+      message: causeMessage(cause),
+    });
+  } finally {
+    if (httpContext) {
+      try {
+        await httpContext.dispose();
+      } catch {
+        // noop
+      }
+    }
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {
+        // noop
+      }
+    }
+  }
+};
+
 const runPlanStepsWithHeal = async (
   steps: RecipeStep[],
   llmCommand: string,
