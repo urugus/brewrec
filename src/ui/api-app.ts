@@ -15,6 +15,13 @@ import { runServiceResult } from "../services/run-service.js";
 import { isValidRecipe } from "./recipe-validator.js";
 import { createSseConnection, sendSseEvent, sseReporter } from "./sse.js";
 
+type ApiErrorPayload = {
+  code: string;
+  error: string;
+};
+
+type ApiErrorStatus = 400 | 404 | 413 | 500;
+
 const isObject = (value: unknown): value is Record<string, unknown> => {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 };
@@ -37,7 +44,7 @@ const isJsonContentType = (contentType: string | undefined): boolean => {
 
 const parseOptionalJsonBody = async (
   c: Context,
-  errorPayload: { error: string; code?: string },
+  errorPayload: ApiErrorPayload,
 ): Promise<{ body: unknown } | { errorResponse: Response }> => {
   if (!isJsonContentType(c.req.header("content-type"))) {
     return { body: null };
@@ -55,6 +62,23 @@ const parseOptionalJsonBody = async (
   }
 };
 
+const errorResponse = (
+  c: Context,
+  status: ApiErrorStatus,
+  code: string,
+  error: string,
+): Response => {
+  return c.json({ code, error }, status);
+};
+
+const sendSseError = (
+  sse: ReturnType<typeof createSseConnection>,
+  code: string,
+  error: string,
+): void => {
+  sendSseEvent(sse, "error", { code, error });
+};
+
 /** @internal */
 export const _uiInternals = {
   isValidRecipe,
@@ -68,7 +92,7 @@ export const createUiApiApp = (): Hono => {
     bodyLimit({
       maxSize: 2 * 1024 * 1024,
       onError: (c) => {
-        return c.json({ error: "payload too large", code: "payload_too_large" }, 413);
+        return errorResponse(c, 413, "payload_too_large", "payload too large");
       },
     }),
   );
@@ -76,7 +100,7 @@ export const createUiApiApp = (): Hono => {
   app.get("/recipes", async (c) => {
     const result = await listRecipesResult();
     if (result.isErr()) {
-      return c.json({ error: formatRecipeStoreError(result.error) }, 500);
+      return errorResponse(c, 500, "recipe_store_error", formatRecipeStoreError(result.error));
     }
     const recipes = result.value;
     return c.json(
@@ -93,28 +117,31 @@ export const createUiApiApp = (): Hono => {
     const result = await loadRecipeResult(c.req.param("id"));
     if (result.isErr()) {
       if (result.error.kind === "recipe_read_failed") {
-        return c.json({ error: "recipe not found" }, 404);
+        return errorResponse(c, 404, "recipe_not_found", "recipe not found");
       }
-      return c.json({ error: formatRecipeStoreError(result.error) }, 500);
+      return errorResponse(c, 500, "recipe_store_error", formatRecipeStoreError(result.error));
     }
     return c.json(result.value);
   });
 
   app.put("/recipes/:id", async (c) => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch(() => undefined);
+    if (body === undefined) {
+      return errorResponse(c, 400, "invalid_json", "invalid json body");
+    }
     if (!isObject(body) || typeof body.id !== "string") {
-      return c.json({ error: "invalid recipe payload" }, 400);
+      return errorResponse(c, 400, "invalid_recipe_payload", "invalid recipe payload");
     }
     if (body.id !== c.req.param("id")) {
-      return c.json({ error: "recipe id mismatch" }, 400);
+      return errorResponse(c, 400, "recipe_id_mismatch", "recipe id mismatch");
     }
     if (!isValidRecipe(body)) {
-      return c.json({ error: "invalid recipe payload" }, 400);
+      return errorResponse(c, 400, "invalid_recipe_payload", "invalid recipe payload");
     }
 
     const saveResult = await saveRecipeResult(body);
     if (saveResult.isErr()) {
-      return c.json({ error: formatRecipeStoreError(saveResult.error) }, 500);
+      return errorResponse(c, 500, "recipe_store_error", formatRecipeStoreError(saveResult.error));
     }
     return c.json({ ok: true });
   });
@@ -126,7 +153,7 @@ export const createUiApiApp = (): Hono => {
   app.get("/recordings", async (c) => {
     const result = await listRecordingsResult();
     if (result.isErr()) {
-      return c.json({ error: formatRecordStoreError(result.error) }, 500);
+      return errorResponse(c, 500, "record_store_error", formatRecordStoreError(result.error));
     }
     return c.json(result.value);
   });
@@ -140,12 +167,12 @@ export const createUiApiApp = (): Hono => {
       try {
         const result = await compileServiceResult(name, { progress });
         if (result.isErr()) {
-          sendSseEvent(sse, "error", { code: result.error.code, message: result.error.message });
+          sendSseError(sse, result.error.code, result.error.message);
         } else {
           sendSseEvent(sse, "done", result.value);
         }
       } catch (cause) {
-        sendSseEvent(sse, "error", { code: "unexpected", message: String(cause) });
+        sendSseError(sse, "unexpected", String(cause));
       } finally {
         await sse.close();
       }
@@ -157,8 +184,8 @@ export const createUiApiApp = (): Hono => {
   app.post("/run/:name", async (c) => {
     const name = c.req.param("name");
     const parsedBody = await parseOptionalJsonBody(c, {
-      error: "invalid json body",
       code: "invalid_json",
+      error: "invalid json body",
     });
     if ("errorResponse" in parsedBody) {
       return parsedBody.errorResponse;
@@ -172,12 +199,12 @@ export const createUiApiApp = (): Hono => {
       try {
         const result = await runServiceResult(name, { vars: varStrings, progress });
         if (result.isErr()) {
-          sendSseEvent(sse, "error", { code: result.error.code, message: result.error.message });
+          sendSseError(sse, result.error.code, result.error.message);
         } else {
           sendSseEvent(sse, "done", result.value);
         }
       } catch (cause) {
-        sendSseEvent(sse, "error", { code: "unexpected", message: String(cause) });
+        sendSseError(sse, "unexpected", String(cause));
       } finally {
         await sse.close();
       }
@@ -189,8 +216,8 @@ export const createUiApiApp = (): Hono => {
   app.post("/plan/:name", async (c) => {
     const name = c.req.param("name");
     const parsedBody = await parseOptionalJsonBody(c, {
-      error: "invalid json body",
       code: "invalid_json",
+      error: "invalid json body",
     });
     if ("errorResponse" in parsedBody) {
       return parsedBody.errorResponse;
@@ -210,11 +237,11 @@ export const createUiApiApp = (): Hono => {
         } else {
           status = 500;
         }
-        return c.json({ error: result.error.message, code: result.error.code }, status);
+        return errorResponse(c, status, result.error.code, result.error.message);
       }
       return c.json(result.value);
     } catch (cause) {
-      return c.json({ error: String(cause), code: "unexpected" }, 500);
+      return errorResponse(c, 500, "unexpected", String(cause));
     }
   });
 
@@ -223,7 +250,7 @@ export const createUiApiApp = (): Hono => {
     const result = await repairServiceResult(name);
     if (result.isErr()) {
       const status = result.error.code === "recipe_not_found" ? 404 : 500;
-      return c.json({ error: result.error.message, code: result.error.code }, status);
+      return errorResponse(c, status, result.error.code, result.error.message);
     }
     return c.json(result.value);
   });
