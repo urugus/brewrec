@@ -24,8 +24,8 @@ describe("ui api app", () => {
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
-      error: "invalid json body",
       code: "invalid_json",
+      error: "invalid json body",
     });
   });
 
@@ -42,8 +42,38 @@ describe("ui api app", () => {
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({
-      error: "invalid json body",
       code: "invalid_json",
+      error: "invalid json body",
+    });
+  });
+
+  it("returns unified error payload for missing recipe", async () => {
+    const app = createUiApiApp();
+
+    const response = await app.request("http://localhost/recipes/no-such-recipe");
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      code: "recipe_not_found",
+      error: "recipe not found",
+    });
+  });
+
+  it("returns unified error payload for invalid recipe update json", async () => {
+    const app = createUiApiApp();
+
+    const response = await app.request("http://localhost/recipes/sample", {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: "{invalid",
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      code: "invalid_json",
+      error: "invalid json body",
     });
   });
 });

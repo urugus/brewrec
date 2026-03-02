@@ -99,4 +99,20 @@ describe("ui payload validation", () => {
 
     expect(_uiInternals.isValidRecipe(invalid)).toBe(false);
   });
+
+  it("rejects invalid variable resolver payload", () => {
+    const invalid = {
+      ...baseRecipe(),
+      variables: [
+        {
+          name: "fromDate",
+          resolver: {
+            type: "builtin",
+          },
+        },
+      ],
+    };
+
+    expect(_uiInternals.isValidRecipe(invalid)).toBe(false);
+  });
 });
