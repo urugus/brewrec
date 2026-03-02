@@ -257,6 +257,83 @@ button.secondary:disabled {
 .run-log-entry[data-type="step_failed"] {
   color: #dc2626;
 }
+.record-panel {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.record-panel h3 {
+  font-size: 15px;
+  margin: 0 0 10px;
+}
+.record-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.record-form input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.record-form button {
+  margin-top: 4px;
+}
+.record-status {
+  margin-top: 8px;
+}
+.record-status-indicator {
+  font-size: 13px;
+  color: var(--accent);
+  font-weight: 600;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.record-error {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #dc2626;
+}
+.record-log {
+  margin-top: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.record-log-entry {
+  padding: 1px 0;
+  color: #555;
+}
+.record-log-entry[data-type="warn"] {
+  color: #b45309;
+}
+.record-done {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: #f0faf9;
+}
+.record-done-summary {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.record-compile-done {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: #f0faf9;
+}
 @media (max-width: 900px) {
   main {
     grid-template-columns: 1fr;

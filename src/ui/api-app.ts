@@ -10,6 +10,7 @@ import {
 import { formatRecordStoreError, listRecordingsResult } from "../core/record-store.js";
 import { compileServiceResult } from "../services/compile-service.js";
 import { planServiceResult } from "../services/plan-service.js";
+import { isValidRecordingName, startRecordSession } from "../services/record-service.js";
 import { repairServiceResult } from "../services/repair-service.js";
 import { runServiceResult } from "../services/run-service.js";
 import { isValidRecipe } from "./recipe-validator.js";
@@ -156,6 +157,63 @@ export const createUiApiApp = (): Hono => {
       return errorResponse(c, 500, "record_store_error", formatRecordStoreError(result.error));
     }
     return c.json(result.value);
+  });
+
+  app.post("/record", async (c) => {
+    const parsedBody = await parseOptionalJsonBody(c, {
+      code: "invalid_json",
+      error: "invalid json body",
+    });
+    if ("errorResponse" in parsedBody) {
+      return parsedBody.errorResponse;
+    }
+    if (!isObject(parsedBody.body)) {
+      return errorResponse(c, 400, "invalid_payload", "request body required");
+    }
+    const { name, url } = parsedBody.body;
+    if (typeof name !== "string" || name.trim() === "") {
+      return errorResponse(c, 400, "invalid_payload", "name is required");
+    }
+    if (!isValidRecordingName(name)) {
+      return errorResponse(c, 400, "invalid_payload", "name contains invalid characters");
+    }
+    if (typeof url !== "string" || url.trim() === "") {
+      return errorResponse(c, 400, "invalid_payload", "url is required");
+    }
+
+    const sse = createSseConnection();
+    const progress = sseReporter(sse);
+
+    void (async () => {
+      try {
+        const sessionResult = await startRecordSession(name, url, { progress });
+        if (sessionResult.isErr()) {
+          sendSseError(sse, sessionResult.error.code, sessionResult.error.message);
+          await sse.close();
+          return;
+        }
+
+        const session = sessionResult.value;
+
+        // Stop the recording if the client disconnects
+        c.req.raw.signal.addEventListener("abort", () => {
+          void session.stop();
+        });
+
+        const result = await session.done;
+        if (result.isErr()) {
+          sendSseError(sse, result.error.code, result.error.message);
+        } else {
+          sendSseEvent(sse, "done", result.value);
+        }
+      } catch (cause) {
+        sendSseError(sse, "unexpected", String(cause));
+      } finally {
+        await sse.close();
+      }
+    })();
+
+    return sse.response;
   });
 
   app.post("/compile/:name", (c) => {

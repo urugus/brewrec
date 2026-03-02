@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "hono/jsx";
+import { useCallback, useEffect, useMemo, useState } from "hono/jsx";
 
 type RecipeSummary = {
   id: string;
@@ -225,6 +225,277 @@ function RunLogView({ logs, result }: { logs: RunLogEntry[]; result: RunResultDa
   );
 }
 
+type RecordLogEntry = {
+  key: string;
+  type: string;
+  message: string;
+};
+
+type RecordResultData = {
+  name: string;
+  eventCount: number;
+};
+
+type CompileLogEntry = {
+  key: string;
+  type: string;
+  message: string;
+};
+
+/** Helper to consume an SSE response stream and dispatch events via callbacks. */
+const consumeSseStream = async (
+  res: Response,
+  handlers: {
+    onProgress?: (event: { type: string; message?: string }) => void;
+    onDone?: (data: unknown) => void;
+    onError?: (data: { error?: string }) => void;
+  },
+): Promise<void> => {
+  if (!res.body) return;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const processChunk = (chunk: string): void => {
+    buffer += chunk;
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+
+    for (const part of parts) {
+      const lines = part.split("\n");
+      const eventLine = lines.find((l) => l.startsWith("event: "));
+      const dataLine = lines.find((l) => l.startsWith("data: "));
+      if (!eventLine || !dataLine) continue;
+
+      const eventType = eventLine.slice("event: ".length);
+      let data: unknown;
+      try {
+        data = JSON.parse(dataLine.slice("data: ".length));
+      } catch {
+        continue;
+      }
+
+      if (eventType === "progress" && data && typeof data === "object") {
+        handlers.onProgress?.(data as { type: string; message?: string });
+      } else if (eventType === "done" && data && typeof data === "object") {
+        handlers.onDone?.(data);
+      } else if (eventType === "error" && data && typeof data === "object") {
+        handlers.onError?.(data as { error?: string });
+      }
+    }
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    processChunk(decoder.decode(value, { stream: true }));
+  }
+  processChunk(decoder.decode());
+};
+
+function RecordPanel({
+  onRecordingComplete,
+}: {
+  onRecordingComplete: (name: string) => void;
+}) {
+  const [recordName, setRecordName] = useState("");
+  const [recordUrl, setRecordUrl] = useState("");
+  const [recording, setRecording] = useState(false);
+  const [recordLogs, setRecordLogs] = useState<RecordLogEntry[]>([]);
+  const [recordResult, setRecordResult] = useState<RecordResultData | null>(null);
+  const [recordError, setRecordError] = useState("");
+  const [compiling, setCompiling] = useState(false);
+  const [compileLogs, setCompileLogs] = useState<CompileLogEntry[]>([]);
+  const [compileError, setCompileError] = useState("");
+  const [compileComplete, setCompileComplete] = useState(false);
+
+  const startRecording = async (): Promise<void> => {
+    if (!recordName.trim() || !recordUrl.trim()) return;
+    setRecording(true);
+    setRecordLogs([]);
+    setRecordResult(null);
+    setRecordError("");
+    setCompileLogs([]);
+    setCompileError("");
+    setCompileComplete(false);
+
+    try {
+      const res = await fetch("/api/record", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: recordName.trim(), url: recordUrl.trim() }),
+      });
+
+      if (!res.ok) {
+        const data = await parseJsonSafe(res);
+        setRecordError(asErrorMessage(data, "failed to start recording"));
+        setRecording(false);
+        return;
+      }
+
+      let logIndex = 0;
+      await consumeSseStream(res, {
+        onProgress: (event) => {
+          logIndex++;
+          setRecordLogs((prev) => [
+            ...prev,
+            { key: `rec-${logIndex}`, type: event.type, message: event.message ?? event.type },
+          ]);
+        },
+        onDone: (data) => {
+          setRecordResult(data as RecordResultData);
+        },
+        onError: (data) => {
+          setRecordError(data.error ?? "unknown error");
+        },
+      });
+    } catch {
+      setRecordError("recording failed");
+    } finally {
+      setRecording(false);
+    }
+  };
+
+  const startCompile = async (): Promise<void> => {
+    if (!recordResult) return;
+    setCompiling(true);
+    setCompileLogs([]);
+    setCompileError("");
+    setCompileComplete(false);
+
+    try {
+      const encodedName = encodeURIComponent(recordResult.name);
+      const res = await fetch(`/api/compile/${encodedName}`, {
+        method: "POST",
+      });
+
+      if (!res.ok || !res.body) {
+        const data = await parseJsonSafe(res);
+        setCompileError(asErrorMessage(data, "compile failed"));
+        return;
+      }
+
+      let logIndex = 0;
+      await consumeSseStream(res, {
+        onProgress: (event) => {
+          logIndex++;
+          setCompileLogs((prev) => [
+            ...prev,
+            { key: `cmp-${logIndex}`, type: event.type, message: event.message ?? event.type },
+          ]);
+        },
+        onDone: () => {
+          setCompileComplete(true);
+          onRecordingComplete(recordResult.name);
+        },
+        onError: (data) => {
+          setCompileError(data.error ?? "compile failed");
+        },
+      });
+    } catch {
+      setCompileError("compile failed");
+    } finally {
+      setCompiling(false);
+    }
+  };
+
+  const resetForm = useCallback((): void => {
+    setRecordName("");
+    setRecordUrl("");
+    setRecordLogs([]);
+    setRecordResult(null);
+    setRecordError("");
+    setCompileLogs([]);
+    setCompileError("");
+    setCompileComplete(false);
+  }, []);
+
+  return (
+    <div class="record-panel">
+      <h3>New Recording</h3>
+      <div class="record-form">
+        <input
+          type="text"
+          placeholder="Recording name"
+          value={recordName}
+          disabled={recording}
+          onInput={(event) => {
+            setRecordName((event.target as HTMLInputElement).value);
+          }}
+        />
+        <input
+          type="url"
+          placeholder="https://example.com"
+          value={recordUrl}
+          disabled={recording}
+          onInput={(event) => {
+            setRecordUrl((event.target as HTMLInputElement).value);
+          }}
+        />
+        <button
+          type="button"
+          class="primary"
+          disabled={recording || !recordName.trim() || !recordUrl.trim()}
+          onClick={() => void startRecording()}
+        >
+          {recording ? "Recording..." : "Start Recording"}
+        </button>
+      </div>
+      {recording ? (
+        <div class="record-status">
+          <div class="record-status-indicator">
+            Recording in progress - close the browser to stop
+          </div>
+        </div>
+      ) : null}
+      {recordError ? <div class="record-error">{recordError}</div> : null}
+      {recordLogs.length > 0 ? (
+        <div class="record-log">
+          {recordLogs.map((entry) => (
+            <div key={entry.key} class="record-log-entry" data-type={entry.type}>
+              {entry.message}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {recordResult && !compileComplete ? (
+        <div class="record-done">
+          <div class="record-done-summary">
+            Recording complete: {recordResult.eventCount} events captured
+          </div>
+          <button
+            type="button"
+            class="primary"
+            disabled={compiling}
+            onClick={() => void startCompile()}
+          >
+            {compiling ? "Compiling..." : "Compile to Recipe"}
+          </button>
+          {compileError ? <div class="record-error">{compileError}</div> : null}
+          {compileLogs.length > 0 ? (
+            <div class="record-log">
+              {compileLogs.map((entry) => (
+                <div key={entry.key} class="record-log-entry" data-type={entry.type}>
+                  {entry.message}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      {compileComplete ? (
+        <div class="record-compile-done">
+          <div class="record-done-summary">Recipe compiled successfully</div>
+          <button type="button" class="secondary" onClick={resetForm}>
+            New Recording
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function RecipeEditor() {
   const [recipes, setRecipes] = useState<RecipeSummary[]>([]);
   const [editorText, setEditorText] = useState("");
@@ -380,61 +651,37 @@ export default function RecipeEditor() {
         return;
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
       let logIndex = 0;
-
-      const processChunk = (chunk: string): void => {
-        buffer += chunk;
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() ?? "";
-
-        for (const part of parts) {
-          const lines = part.split("\n");
-          const eventLine = lines.find((l) => l.startsWith("event: "));
-          const dataLine = lines.find((l) => l.startsWith("data: "));
-          if (!eventLine || !dataLine) continue;
-
-          const eventType = eventLine.slice("event: ".length);
-          let data: unknown;
-          try {
-            data = JSON.parse(dataLine.slice("data: ".length));
-          } catch {
-            continue;
+      await consumeSseStream(res, {
+        onProgress: (event) => {
+          const message = event.message ?? event.type;
+          logIndex++;
+          setRunLogs((prev) => [...prev, { key: `log-${logIndex}`, type: event.type, message }]);
+        },
+        onDone: (data) => {
+          const result = data as RunResultData;
+          setRunResult(result);
+          setStatus(result.ok ? "run completed" : `run failed: ${result.error ?? "unknown"}`);
+          if (result.ok && healEnabled) {
+            void reloadCurrentRecipe();
           }
-
-          if (eventType === "progress" && data && typeof data === "object") {
-            const event = data as { type: string; message?: string };
-            const message = event.message ?? event.type;
-            logIndex++;
-            setRunLogs((prev) => [...prev, { key: `log-${logIndex}`, type: event.type, message }]);
-          } else if (eventType === "done" && data && typeof data === "object") {
-            const result = data as RunResultData;
-            setRunResult(result);
-            setStatus(result.ok ? "run completed" : `run failed: ${result.error ?? "unknown"}`);
-            if (result.ok && healEnabled) {
-              void reloadCurrentRecipe();
-            }
-          } else if (eventType === "error" && data && typeof data === "object") {
-            const error = data as { error?: string };
-            setStatus(`run error: ${error.error ?? "unknown"}`);
-          }
-        }
-      };
-
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        processChunk(decoder.decode(value, { stream: true }));
-      }
-      processChunk(decoder.decode());
+        },
+        onError: (data) => {
+          const error = data as { error?: string };
+          setStatus(`run error: ${error.error ?? "unknown"}`);
+        },
+      });
     } catch {
       setStatus("run failed");
     } finally {
       setRunLoading(false);
     }
   };
+
+  const handleRecordingComplete = useCallback((name: string) => {
+    void loadRecipeList();
+    void openRecipe(name);
+  }, []);
 
   useEffect(() => {
     void loadRecipeList();
@@ -453,6 +700,7 @@ export default function RecipeEditor() {
             </li>
           ))}
         </ul>
+        <RecordPanel onRecordingComplete={handleRecordingComplete} />
       </section>
       <section class="panel">
         <div class="row">
