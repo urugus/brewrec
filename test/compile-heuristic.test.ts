@@ -8,8 +8,9 @@ import {
   isDocumentDownload,
   isMonitoringRequest,
   isStaticAsset,
+  reorderMisplacedHttpSteps,
 } from "../src/core/compile-heuristic.js";
-import type { RecordedEvent } from "../src/types.js";
+import type { RecipeStep, RecordedEvent } from "../src/types.js";
 
 describe("isStaticAsset", () => {
   it("detects CSS/JS/font/image files", () => {
@@ -460,5 +461,122 @@ describe("monitoring filtering integration", () => {
     const httpSteps = steps.filter((s) => s.mode === "http");
     expect(httpSteps).toHaveLength(1);
     expect(httpSteps[0].url).toBe("https://example.com/api/v1/data");
+  });
+});
+
+describe("reorderMisplacedHttpSteps", () => {
+  const nav = (url: string): RecipeStep => ({
+    id: `nav-${url}`,
+    title: "Navigate",
+    mode: "pw",
+    action: "goto",
+    url,
+    effects: [{ type: "url_changed", value: url }],
+  });
+
+  const httpFetch = (id: string, guardUrl: string, fetchUrl: string): RecipeStep => ({
+    id,
+    title: "Fetch API",
+    mode: "http",
+    action: "fetch",
+    url: fetchUrl,
+    guards: [{ type: "url_is", value: guardUrl }],
+  });
+
+  const pwClick = (id: string, guardUrl: string): RecipeStep => ({
+    id,
+    title: "Click",
+    mode: "pw",
+    action: "click",
+    selectorVariants: ["#btn"],
+    guards: [{ type: "url_is", value: guardUrl }],
+  });
+
+  it("moves HTTP steps with mismatched guard before the navigation", () => {
+    const steps: RecipeStep[] = [
+      nav("https://example.com/page1"),
+      httpFetch("h1", "https://example.com/page1", "https://example.com/api/a"),
+      nav("https://example.com/page2"),
+      httpFetch("h2", "https://example.com/page1", "https://example.com/api/b"),
+    ];
+
+    const result = reorderMisplacedHttpSteps(steps);
+
+    expect(result.map((s) => s.id)).toEqual([
+      "nav-https://example.com/page1",
+      "h1",
+      "h2",
+      "nav-https://example.com/page2",
+    ]);
+  });
+
+  it("leaves correctly-placed HTTP steps in place", () => {
+    const steps: RecipeStep[] = [
+      nav("https://example.com/page1"),
+      httpFetch("h1", "https://example.com/page1", "https://example.com/api/a"),
+      httpFetch("h2", "https://example.com/page1", "https://example.com/api/b"),
+      nav("https://example.com/page2"),
+      httpFetch("h3", "https://example.com/page2", "https://example.com/api/c"),
+    ];
+
+    const result = reorderMisplacedHttpSteps(steps);
+
+    expect(result.map((s) => s.id)).toEqual([
+      "nav-https://example.com/page1",
+      "h1",
+      "h2",
+      "nav-https://example.com/page2",
+      "h3",
+    ]);
+  });
+
+  it("handles mixed correct and misplaced HTTP steps", () => {
+    const steps: RecipeStep[] = [
+      nav("https://example.com/page1"),
+      nav("https://example.com/page2"),
+      httpFetch("h1", "https://example.com/page1", "https://example.com/api/a"),
+      httpFetch("h2", "https://example.com/page2", "https://example.com/api/b"),
+      httpFetch("h3", "https://example.com/page1", "https://example.com/api/c"),
+    ];
+
+    const result = reorderMisplacedHttpSteps(steps);
+
+    expect(result.map((s) => s.id)).toEqual([
+      "nav-https://example.com/page1",
+      "h1",
+      "h3",
+      "nav-https://example.com/page2",
+      "h2",
+    ]);
+  });
+
+  it("is a no-op when all steps are already correctly ordered", () => {
+    const steps: RecipeStep[] = [
+      nav("https://example.com/page1"),
+      httpFetch("h1", "https://example.com/page1", "https://example.com/api/a"),
+      pwClick("c1", "https://example.com/page1"),
+    ];
+
+    const result = reorderMisplacedHttpSteps(steps);
+
+    expect(result.map((s) => s.id)).toEqual(["nav-https://example.com/page1", "h1", "c1"]);
+  });
+
+  it("moves misplaced HTTP steps that appear after a PW step", () => {
+    const steps: RecipeStep[] = [
+      nav("https://example.com/page1"),
+      nav("https://example.com/page2"),
+      pwClick("c1", "https://example.com/page2"),
+      httpFetch("h1", "https://example.com/page1", "https://example.com/api/a"),
+    ];
+
+    const result = reorderMisplacedHttpSteps(steps);
+
+    expect(result.map((s) => s.id)).toEqual([
+      "nav-https://example.com/page1",
+      "h1",
+      "nav-https://example.com/page2",
+      "c1",
+    ]);
   });
 });

@@ -1,4 +1,5 @@
 import type { RecipeStep, RecordedEvent } from "../types.js";
+import { matchesUrl } from "./step-validation.js";
 
 const STATIC_ASSET_RE =
   /\.(?:css|js|woff2?|ttf|eot|otf|png|jpe?g|gif|svg|ico|webp|avif|mp4|webm)(?:\?|$)/i;
@@ -281,6 +282,54 @@ export const deduplicateClicks = (events: RecordedEvent[]): RecordedEvent[] => {
   return result;
 };
 
+/**
+ * Move HTTP steps whose url_is guard no longer matches after a navigation.
+ *
+ * Browser async timing can record a request event after a navigation event
+ * even though the request was logically issued before the navigation.
+ * This pass moves such HTTP steps to just before the navigation that
+ * invalidates their guard URL.
+ */
+export const reorderMisplacedHttpSteps = (steps: RecipeStep[]): RecipeStep[] => {
+  const result = [...steps];
+
+  for (let i = 0; i < result.length; i++) {
+    const step = result[i];
+    if (step.mode !== "pw" || step.action !== "goto" || !step.url) continue;
+
+    const navTargetUrl = step.url;
+
+    // Find the end of the segment (next navigation or end of list)
+    let segEnd = result.length;
+    for (let k = i + 1; k < result.length; k++) {
+      if (result[k].mode === "pw" && result[k].action === "goto") {
+        segEnd = k;
+        break;
+      }
+    }
+
+    // Collect misplaced HTTP steps in this segment
+    const misplaced: RecipeStep[] = [];
+    for (let j = segEnd - 1; j > i; j--) {
+      const candidate = result[j];
+      if (candidate.mode !== "http") continue;
+
+      const guardUrl = candidate.guards?.find((g) => g.type === "url_is")?.value;
+      if (guardUrl && !matchesUrl(guardUrl, navTargetUrl)) {
+        misplaced.unshift(candidate);
+        result.splice(j, 1);
+      }
+    }
+
+    if (misplaced.length > 0) {
+      result.splice(i, 0, ...misplaced);
+      i += misplaced.length; // skip past inserted steps and the navigation
+    }
+  }
+
+  return result;
+};
+
 export const eventsToCompileResult = (events: RecordedEvent[]): CompileResult => {
   const preprocessed = deduplicateClicks(aggregateInputEvents(events));
   const navigationUrls = new Set(
@@ -289,9 +338,11 @@ export const eventsToCompileResult = (events: RecordedEvent[]): CompileResult =>
   const responseMap = buildResponseMap(preprocessed);
   const seenRequestUrls = new Set<string>();
 
-  const steps = preprocessed
+  const rawSteps = preprocessed
     .map((event, index) => eventToStep(event, index, navigationUrls, responseMap, seenRequestUrls))
     .filter((step): step is RecipeStep => step !== null);
+
+  const steps = reorderMisplacedHttpSteps(rawSteps);
 
   const httpPromoted = steps.filter((step) => step.mode === "http").length;
   const allRequestCount = events.filter((event) => event.type === "request").length;

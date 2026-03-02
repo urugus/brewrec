@@ -135,10 +135,12 @@ export const applyPhase2Replacements = (
   return mergedSteps;
 };
 
+const PW_ACTION_TIMEOUT = 5000;
+
 const tryClickResult = async (page: Page, selectors: string[]): Promise<Result<void, string>> => {
   for (const selector of selectors) {
     try {
-      await page.locator(selector).first().click({ timeout: 1200 });
+      await page.locator(selector).first().click({ timeout: PW_ACTION_TIMEOUT });
       return ok(undefined);
     } catch {
       // try next candidate
@@ -155,7 +157,7 @@ const tryFillResult = async (
 ): Promise<Result<void, string>> => {
   for (const selector of selectors) {
     try {
-      await page.locator(selector).first().fill(value, { timeout: 1200 });
+      await page.locator(selector).first().fill(value, { timeout: PW_ACTION_TIMEOUT });
       return ok(undefined);
     } catch {
       // try next candidate
