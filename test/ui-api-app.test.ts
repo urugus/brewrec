@@ -125,6 +125,40 @@ describe("ui api app", () => {
     expect(payload).not.toHaveProperty("message");
   });
 
+  it("emits unified error payload in debug SSE stream", async () => {
+    const app = createUiApiApp();
+
+    const response = await app.request("http://localhost/debug/__missing_recipe_for_sse__", {
+      method: "POST",
+    });
+    const body = await response.text();
+    const payload = parseSseEventPayload(body, "error");
+
+    expect(response.status).toBe(200);
+    expect(payload).toBeDefined();
+    expect(payload?.code).toBe("recipe_not_found");
+    expect(typeof payload?.error).toBe("string");
+    expect(payload).not.toHaveProperty("message");
+  });
+
+  it("returns 400 for invalid json body on debug endpoint", async () => {
+    const app = createUiApiApp();
+
+    const response = await app.request("http://localhost/debug/sample", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: "{invalid",
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      code: "invalid_json",
+      error: "invalid json body",
+    });
+  });
+
   it("returns 400 for invalid json body on record endpoint", async () => {
     const app = createUiApiApp();
 
@@ -208,6 +242,30 @@ describe("ui api app", () => {
     await expect(response.json()).resolves.toEqual({
       code: "invalid_payload",
       error: "request body required",
+    });
+  });
+
+  it("returns 404 for missing artifact file", async () => {
+    const app = createUiApiApp();
+
+    const response = await app.request("http://localhost/artifacts/nonexistent.webm");
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      code: "not_found",
+      error: "file not found",
+    });
+  });
+
+  it("returns 400 for artifact path traversal", async () => {
+    const app = createUiApiApp();
+
+    const response = await app.request("http://localhost/artifacts/..%2Fsecret.txt");
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      code: "invalid_path",
+      error: "invalid filename",
     });
   });
 });

@@ -225,6 +225,60 @@ function RunLogView({ logs, result }: { logs: RunLogEntry[]; result: RunResultDa
   );
 }
 
+type DebugLogEntry = {
+  key: string;
+  type: string;
+  message: string;
+};
+
+type DebugResultData = {
+  name: string;
+  version: number;
+  ok: boolean;
+  stepsTotal: number;
+  stepsCompleted: number;
+  videoPath?: string;
+  error?: string;
+};
+
+function DebugLogView({ logs, result }: { logs: DebugLogEntry[]; result: DebugResultData | null }) {
+  if (logs.length === 0 && !result) return null;
+
+  const videoFilename = result?.videoPath ? result.videoPath.split("/").pop() : null;
+
+  return (
+    <div class={`debug-log ${result ? (result.ok ? "debug-log-ok" : "debug-log-fail") : ""}`}>
+      <h3>Debug Log</h3>
+      {result ? (
+        <div class="debug-result-summary">
+          {result.ok ? "Completed" : "Failed"}
+          {" - "}
+          {result.name} v{result.version} ({result.stepsCompleted}/{result.stepsTotal} steps)
+          {result.error ? `: ${result.error}` : ""}
+        </div>
+      ) : null}
+      {result && videoFilename ? (
+        <div class="debug-video-link">
+          <a
+            href={`/api/artifacts/${encodeURIComponent(videoFilename)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            View recorded video
+          </a>
+        </div>
+      ) : null}
+      <div class="debug-log-entries">
+        {logs.map((entry) => (
+          <div key={entry.key} class="debug-log-entry" data-type={entry.type}>
+            {entry.message}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 type RecordLogEntry = {
   key: string;
   type: string;
@@ -508,6 +562,9 @@ export default function RecipeEditor() {
   const [runLoading, setRunLoading] = useState(false);
   const [runLogs, setRunLogs] = useState<RunLogEntry[]>([]);
   const [runResult, setRunResult] = useState<RunResultData | null>(null);
+  const [debugLoading, setDebugLoading] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<DebugLogEntry[]>([]);
+  const [debugResult, setDebugResult] = useState<DebugResultData | null>(null);
 
   const variables = useMemo(() => extractVariables(editorText), [editorText]);
 
@@ -549,6 +606,8 @@ export default function RecipeEditor() {
       setPlanResult(null);
       setRunLogs([]);
       setRunResult(null);
+      setDebugLogs([]);
+      setDebugResult(null);
     } catch {
       setStatus("failed to open recipe");
     }
@@ -678,6 +737,60 @@ export default function RecipeEditor() {
     }
   };
 
+  const executeDebug = async (): Promise<void> => {
+    if (!currentId) return;
+    setDebugLoading(true);
+    setDebugLogs([]);
+    setDebugResult(null);
+    setStatus("debugging...");
+
+    try {
+      const validKeys = new Set(variables.map((v) => varKey(v)));
+      const filteredVars: Record<string, string> = {};
+      for (const [k, v] of Object.entries(vars)) {
+        if (v !== "" && validKeys.has(k)) filteredVars[k] = v;
+      }
+
+      const payload: Record<string, unknown> = {};
+      if (Object.keys(filteredVars).length > 0) payload.vars = filteredVars;
+
+      const hasPayload = Object.keys(payload).length > 0;
+      const res = await fetch(`/api/debug/${currentId}`, {
+        method: "POST",
+        headers: hasPayload ? { "Content-Type": "application/json" } : {},
+        body: hasPayload ? JSON.stringify(payload) : undefined,
+      });
+
+      if (!res.ok || !res.body) {
+        setStatus("debug failed");
+        setDebugLoading(false);
+        return;
+      }
+
+      let logIndex = 0;
+      await consumeSseStream(res, {
+        onProgress: (event) => {
+          const message = event.message ?? event.type;
+          logIndex++;
+          setDebugLogs((prev) => [...prev, { key: `dbg-${logIndex}`, type: event.type, message }]);
+        },
+        onDone: (data) => {
+          const result = data as DebugResultData;
+          setDebugResult(result);
+          setStatus(result.ok ? "debug completed" : `debug failed: ${result.error ?? "unknown"}`);
+        },
+        onError: (data) => {
+          const error = data as { error?: string };
+          setStatus(`debug error: ${error.error ?? "unknown"}`);
+        },
+      });
+    } catch {
+      setStatus("debug failed");
+    } finally {
+      setDebugLoading(false);
+    }
+  };
+
   const handleRecordingComplete = useCallback((name: string) => {
     void loadRecipeList();
     void openRecipe(name);
@@ -725,6 +838,15 @@ export default function RecipeEditor() {
           >
             {runLoading ? "Running..." : "Run"}
           </button>
+          <button
+            id="debugBtn"
+            class="secondary"
+            type="button"
+            disabled={!currentId || debugLoading}
+            onClick={() => void executeDebug()}
+          >
+            {debugLoading ? "Debugging..." : "Debug"}
+          </button>
           <label class="heal-toggle">
             <input
               type="checkbox"
@@ -748,6 +870,7 @@ export default function RecipeEditor() {
         />
         {planResult ? <PlanResultView plan={planResult} /> : null}
         <RunLogView logs={runLogs} result={runResult} />
+        <DebugLogView logs={debugLogs} result={debugResult} />
       </section>
     </main>
   );

@@ -334,6 +334,58 @@ button.secondary:disabled {
   border-radius: 8px;
   background: #f0faf9;
 }
+.debug-log {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #faf8f2;
+}
+.debug-log-ok {
+  border-color: var(--accent);
+  background: #f0faf9;
+}
+.debug-log-fail {
+  border-color: #dc2626;
+  background: #fef2f2;
+}
+.debug-log h3 {
+  font-size: 14px;
+  margin: 0 0 8px;
+}
+.debug-result-summary {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.debug-video-link {
+  margin-bottom: 8px;
+}
+.debug-video-link a {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: underline;
+}
+.debug-log-entries {
+  max-height: 200px;
+  overflow-y: auto;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.debug-log-entry {
+  padding: 2px 0;
+  color: #555;
+}
+.debug-log-entry[data-type="warn"] {
+  color: #b45309;
+}
+.debug-log-entry[data-type="step_failed"] {
+  color: #dc2626;
+}
+.debug-log-entry[data-type="step_ok"] {
+  color: var(--accent);
+}
 @media (max-width: 900px) {
   main {
     grid-template-columns: 1fr;
