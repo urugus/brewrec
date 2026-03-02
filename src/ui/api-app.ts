@@ -1,6 +1,11 @@
+import fsSync from "node:fs";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { Readable } from "node:stream";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { ARTIFACTS_DIR } from "../core/paths.js";
 import {
   formatRecipeStoreError,
   listRecipesResult,
@@ -9,6 +14,7 @@ import {
 } from "../core/recipe-store.js";
 import { formatRecordStoreError, listRecordingsResult } from "../core/record-store.js";
 import { compileServiceResult } from "../services/compile-service.js";
+import { debugServiceResult } from "../services/debug-service.js";
 import { planServiceResult } from "../services/plan-service.js";
 import { isValidRecordingName, startRecordSession } from "../services/record-service.js";
 import { repairServiceResult } from "../services/repair-service.js";
@@ -272,6 +278,38 @@ export const createUiApiApp = (): Hono => {
     return sse.response;
   });
 
+  app.post("/debug/:name", async (c) => {
+    const name = c.req.param("name");
+    const parsedBody = await parseOptionalJsonBody(c, {
+      code: "invalid_json",
+      error: "invalid json body",
+    });
+    if ("errorResponse" in parsedBody) {
+      return parsedBody.errorResponse;
+    }
+    const vars = isObject(parsedBody.body) ? parsedBody.body.vars : undefined;
+    const varStrings = parseVarsBody(vars);
+    const sse = createSseConnection();
+    const progress = sseReporter(sse);
+
+    void (async () => {
+      try {
+        const result = await debugServiceResult(name, { vars: varStrings, progress });
+        if (result.isErr()) {
+          sendSseError(sse, result.error.code, result.error.message);
+        } else {
+          sendSseEvent(sse, "done", result.value);
+        }
+      } catch (cause) {
+        sendSseError(sse, "unexpected", String(cause));
+      } finally {
+        await sse.close();
+      }
+    })();
+
+    return sse.response;
+  });
+
   app.post("/plan/:name", async (c) => {
     const name = c.req.param("name");
     const parsedBody = await parseOptionalJsonBody(c, {
@@ -312,6 +350,32 @@ export const createUiApiApp = (): Hono => {
       return errorResponse(c, status, result.error.code, result.error.message);
     }
     return c.json(result.value);
+  });
+
+  app.get("/artifacts/:filename", async (c) => {
+    const filename = c.req.param("filename");
+    if (filename.includes("..") || filename.includes("/") || filename.includes("\\")) {
+      return errorResponse(c, 400, "invalid_path", "invalid filename");
+    }
+    const filePath = path.join(ARTIFACTS_DIR, filename);
+    try {
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile()) {
+        return errorResponse(c, 404, "not_found", "file not found");
+      }
+      const ext = path.extname(filename).toLowerCase();
+      const contentType = ext === ".webm" ? "video/webm" : "application/octet-stream";
+      const nodeStream = fsSync.createReadStream(filePath);
+      const webStream = Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>;
+      return new Response(webStream, {
+        headers: {
+          "Content-Type": contentType,
+          "Content-Length": String(stat.size),
+        },
+      });
+    } catch {
+      return errorResponse(c, 404, "not_found", "file not found");
+    }
   });
 
   return app;
