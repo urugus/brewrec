@@ -283,6 +283,19 @@ export default function RecipeEditor() {
     }
   };
 
+  const reloadCurrentRecipe = async (): Promise<void> => {
+    if (!currentId) return;
+    try {
+      const res = await fetch(`/api/recipes/${currentId}`);
+      const data = await parseJsonSafe(res);
+      if (res.ok && data) {
+        setEditorText(JSON.stringify(data, null, 2));
+      }
+    } catch {
+      // best-effort reload
+    }
+  };
+
   const saveRecipe = async (): Promise<void> => {
     if (!currentId) return;
     try {
@@ -397,9 +410,12 @@ export default function RecipeEditor() {
             logIndex++;
             setRunLogs((prev) => [...prev, { key: `log-${logIndex}`, type: event.type, message }]);
           } else if (eventType === "done" && data && typeof data === "object") {
-            setRunResult(data as RunResultData);
             const result = data as RunResultData;
+            setRunResult(result);
             setStatus(result.ok ? "run completed" : `run failed: ${result.error ?? "unknown"}`);
+            if (result.ok && healEnabled) {
+              void reloadCurrentRecipe();
+            }
           } else if (eventType === "error" && data && typeof data === "object") {
             const error = data as { error?: string };
             setStatus(`run error: ${error.error ?? "unknown"}`);

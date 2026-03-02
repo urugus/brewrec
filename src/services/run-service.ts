@@ -57,13 +57,16 @@ export const runServiceResult = async (
     }
 
     const { phase1Healed, selectorPatches } = healResult.value;
+    let savedVersion = version;
     if (phase1Healed > 0) {
       progress({
         type: "info",
-        message: `Auto-healed ${phase1Healed} selector(s). Saving recipe...`,
+        message: `Auto-healed ${phase1Healed} step(s). Saving recipe...`,
       });
       const recipeResult = await loadRecipeResult(name);
-      if (recipeResult.isOk()) {
+      if (recipeResult.isErr()) {
+        progress({ type: "warn", message: "Failed to load recipe for heal save." });
+      } else {
         const recipe = recipeResult.value;
         const mergedSteps = recipe.steps.map((s) => {
           const newSelectors = selectorPatches.get(s.id);
@@ -84,6 +87,7 @@ export const runServiceResult = async (
         if (saveResult.isErr()) {
           progress({ type: "warn", message: formatRecipeStoreError(saveResult.error) });
         } else {
+          savedVersion = healed.version;
           progress({ type: "info", message: `Recipe saved as v${healed.version}.` });
         }
       }
@@ -92,7 +96,7 @@ export const runServiceResult = async (
     progress({ type: "info", message: "Run (heal) completed successfully." });
     return ok({
       name,
-      version: version + (phase1Healed > 0 ? 1 : 0),
+      version: savedVersion,
       ok: true,
       phase: "execute",
       resolvedVars: plan.resolvedVars,
