@@ -13,7 +13,7 @@
     "build:cli": "tsc -p tsconfig.json",
     "build:ui": "vite build --mode client && vite build",
     "dev": "tsx src/index.ts",
-    "dev:ui": "vite --port 4312",
+    "dev:ui": "vite --host 127.0.0.1 --port 4312 --open",
     "lint": "biome check . && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.app.json",
     "format": "biome format --write .",
     "test": "vitest run",
