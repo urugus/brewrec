@@ -1,5 +1,7 @@
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -361,13 +363,14 @@ export const createUiApiApp = (): Hono => {
       if (!stat.isFile()) {
         return errorResponse(c, 404, "not_found", "file not found");
       }
-      const data = await fs.readFile(filePath);
       const ext = path.extname(filename).toLowerCase();
       const contentType = ext === ".webm" ? "video/webm" : "application/octet-stream";
-      return new Response(data, {
+      const nodeStream = fsSync.createReadStream(filePath);
+      const webStream = Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>;
+      return new Response(webStream, {
         headers: {
           "Content-Type": contentType,
-          "Content-Length": String(data.length),
+          "Content-Length": String(stat.size),
         },
       });
     } catch {

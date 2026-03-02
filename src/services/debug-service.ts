@@ -14,7 +14,7 @@ export type DebugResult = {
   ok: boolean;
   stepsTotal: number;
   stepsCompleted: number;
-  videoPath?: string;
+  videoFilename?: string;
   error?: string;
 };
 
@@ -22,6 +22,13 @@ export type DebugServiceOptions = {
   vars?: string[];
   llmCommand?: string;
   progress?: ProgressReporter;
+};
+
+const SUPPORTED_DEBUG_ACTIONS = new Set(["goto", "click", "fill", "press"]);
+
+const extractFilename = (filePath: string | undefined): string | undefined => {
+  if (!filePath) return undefined;
+  return path.basename(filePath);
 };
 
 export const debugServiceResult = async (
@@ -67,6 +74,15 @@ export const debugServiceResult = async (
       progress({ type: "step_start", stepId: step.id, title });
 
       try {
+        if (step.mode === "http" || !SUPPORTED_DEBUG_ACTIONS.has(step.action)) {
+          progress({
+            type: "warn",
+            message: `Skipped: ${step.action} (${step.mode ?? "unknown"} mode not supported in debug)`,
+          });
+          stepsCompleted++;
+          continue;
+        }
+
         if (step.action === "goto" && step.url) {
           await page.goto(step.url);
           stepsCompleted++;
@@ -95,18 +111,13 @@ export const debugServiceResult = async (
           await page.keyboard.press(step.key);
           stepsCompleted++;
           progress({ type: "step_ok", stepId: step.id });
-          continue;
         }
-
-        // Unknown action - skip
-        stepsCompleted++;
-        progress({ type: "step_ok", stepId: step.id });
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
         progress({ type: "step_failed", stepId: step.id, error: message });
 
         // Close context to finalize video
-        const videoPath = await page.video()?.path();
+        const videoFilename = extractFilename(await page.video()?.path());
         await context.close();
 
         return ok({
@@ -115,14 +126,14 @@ export const debugServiceResult = async (
           ok: false,
           stepsTotal,
           stepsCompleted,
-          videoPath,
+          videoFilename,
           error: `Step ${step.id} failed: ${message}`,
         });
       }
     }
 
     // All steps completed - finalize video
-    const videoPath = await page.video()?.path();
+    const videoFilename = extractFilename(await page.video()?.path());
     await context.close();
 
     progress({ type: "info", message: "Debug completed successfully." });
@@ -133,7 +144,7 @@ export const debugServiceResult = async (
       ok: true,
       stepsTotal,
       stepsCompleted,
-      videoPath,
+      videoFilename,
     });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);

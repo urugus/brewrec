@@ -237,14 +237,14 @@ type DebugResultData = {
   ok: boolean;
   stepsTotal: number;
   stepsCompleted: number;
-  videoPath?: string;
+  videoFilename?: string;
   error?: string;
 };
 
 function DebugLogView({ logs, result }: { logs: DebugLogEntry[]; result: DebugResultData | null }) {
   if (logs.length === 0 && !result) return null;
 
-  const videoFilename = result?.videoPath ? result.videoPath.split("/").pop() : null;
+  const videoFilename = result?.videoFilename ?? null;
 
   return (
     <div class={`debug-log ${result ? (result.ok ? "debug-log-ok" : "debug-log-fail") : ""}`}>
