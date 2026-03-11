@@ -1,8 +1,5 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { type Result, err, ok } from "neverthrow";
-
-const execFileAsync = promisify(execFile);
 
 export type LocalLlmError = {
   kind: "command_failed";
@@ -30,6 +27,46 @@ export const formatLocalLlmError = (error: LocalLlmError): string => {
   return `LLM command failed (${error.command}): ${details.join(", ")}`;
 };
 
+const DEFAULT_TIMEOUT_MS = 120_000;
+
+const spawnWithStdin = (
+  command: string,
+  args: string[],
+  input: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<{ stdout: string; code: number | null; signal: string | null }> => {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject({ code: undefined, signal: "SIGTERM", message: `timeout after ${timeoutMs}ms` });
+    }, timeoutMs);
+    child.stdout.on("data", (d: Buffer) => {
+      stdout += d.toString();
+    });
+    child.stderr.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
+    child.on("error", (e: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      reject({ code: e.code, signal: undefined });
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ stdout, code, signal });
+      } else {
+        reject({ code, signal, stderr });
+      }
+    });
+    child.stdin.write(input);
+    child.stdin.end();
+  });
+};
+
 const parseProcessFailure = (
   cause: unknown,
 ): { reason: LocalLlmError["reason"]; code?: string | number; signal?: string } => {
@@ -46,8 +83,6 @@ const parseProcessFailure = (
   return { reason: "unknown", code, signal };
 };
 
-const DEFAULT_TIMEOUT_MS = 120_000;
-
 export const runLocalClaudeResult = async (
   prompt: string,
   command = "claude",
@@ -55,11 +90,7 @@ export const runLocalClaudeResult = async (
 ): Promise<Result<string, LocalLlmError>> => {
   try {
     const { CLAUDECODE, ...cleanEnv } = process.env;
-    const { stdout } = await execFileAsync(command, ["-p", prompt], {
-      maxBuffer: 4 * 1024 * 1024,
-      env: cleanEnv,
-      timeout: timeoutMs,
-    });
+    const { stdout } = await spawnWithStdin(command, ["-p", "-"], prompt, cleanEnv, timeoutMs);
     return ok(stdout.trim());
   } catch (cause) {
     const failure = parseProcessFailure(cause);
