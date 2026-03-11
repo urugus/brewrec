@@ -51,8 +51,10 @@ export const runLocalClaudeResult = async (
   command = "claude",
 ): Promise<Result<string, LocalLlmError>> => {
   try {
+    const { CLAUDECODE, ...cleanEnv } = process.env;
     const { stdout } = await execFileAsync(command, ["-p", prompt], {
       maxBuffer: 4 * 1024 * 1024,
+      env: cleanEnv,
     });
     return ok(stdout.trim());
   } catch (cause) {

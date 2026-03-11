@@ -402,13 +402,21 @@ const saveHttpDownloadIfNeeded = async (
   }
 };
 
-const setupDownloadHandler = (page: Page, downloadDir: string): void => {
-  page.on("download", async (download) => {
-    const filename = download.suggestedFilename();
-    const savePath = path.join(downloadDir, filename);
-    await download.saveAs(savePath);
-    process.stderr.write(`  Downloaded: ${savePath}\n`);
+const setupDownloadHandler = (
+  page: Page,
+  downloadDir: string,
+): { pendingDownloads: Promise<void>[] } => {
+  const pendingDownloads: Promise<void>[] = [];
+  page.on("download", (download) => {
+    const promise = (async () => {
+      const filename = download.suggestedFilename();
+      const savePath = path.join(downloadDir, filename);
+      await download.saveAs(savePath);
+      process.stderr.write(`  Downloaded: ${savePath}\n`);
+    })();
+    pendingDownloads.push(promise);
   });
+  return { pendingDownloads };
 };
 
 const extractHostnameForGuardUrl = (guardValue: string): string | undefined => {
@@ -557,13 +565,14 @@ export const runPlanSteps = async (
   let pwContext: BrowserContext | null = null;
   let page: Page | null = null;
   let httpContext: APIRequestContext | undefined;
+  let pendingDownloads: Promise<void>[] = [];
 
   try {
     if (hasPwStep) {
       browser = await chromium.launch({ headless: true });
       pwContext = await browser.newContext({ acceptDownloads: true });
       page = await pwContext.newPage();
-      setupDownloadHandler(page, downloadDir);
+      pendingDownloads = setupDownloadHandler(page, downloadDir).pendingDownloads;
     }
 
     let pageUrl: string | undefined;
@@ -650,6 +659,7 @@ export const runPlanSteps = async (
       message: causeMessage(cause),
     });
   } finally {
+    await Promise.allSettled(pendingDownloads);
     if (httpContext) {
       try {
         await httpContext.dispose();
@@ -692,13 +702,14 @@ export const runPlanStepsWithAutoHeal = async (
   let pwContext: BrowserContext | null = null;
   let page: Page | null = null;
   let httpContext: APIRequestContext | undefined;
+  let pendingDownloads: Promise<void>[] = [];
 
   try {
     if (hasPwStep) {
       browser = await chromium.launch({ headless: true });
       pwContext = await browser.newContext({ acceptDownloads: true });
       page = await pwContext.newPage();
-      setupDownloadHandler(page, downloadDir);
+      pendingDownloads = setupDownloadHandler(page, downloadDir).pendingDownloads;
     }
 
     let pageUrl: string | undefined;
@@ -791,6 +802,7 @@ export const runPlanStepsWithAutoHeal = async (
       message: causeMessage(cause),
     });
   } finally {
+    await Promise.allSettled(pendingDownloads);
     if (httpContext) {
       try {
         await httpContext.dispose();
@@ -822,13 +834,14 @@ const runPlanStepsWithHeal = async (
   let context: BrowserContext | null = null;
   let page: Page | null = null;
   let httpContext: APIRequestContext | undefined;
+  let pendingDownloads: Promise<void>[] = [];
 
   try {
     if (hasPwStep) {
       browser = await chromium.launch({ headless: false });
       context = await browser.newContext({ acceptDownloads: true });
       page = await context.newPage();
-      setupDownloadHandler(page, downloadDir);
+      pendingDownloads = setupDownloadHandler(page, downloadDir).pendingDownloads;
     }
 
     const healRecordBuffer: RecordedEvent[] = [];
@@ -1061,6 +1074,7 @@ const runPlanStepsWithHeal = async (
       message: causeMessage(cause),
     });
   } finally {
+    await Promise.allSettled(pendingDownloads);
     if (httpContext) {
       try {
         await httpContext.dispose();
