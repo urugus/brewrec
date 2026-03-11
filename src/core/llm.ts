@@ -46,15 +46,19 @@ const parseProcessFailure = (
   return { reason: "unknown", code, signal };
 };
 
+const DEFAULT_TIMEOUT_MS = 120_000;
+
 export const runLocalClaudeResult = async (
   prompt: string,
   command = "claude",
+  timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<Result<string, LocalLlmError>> => {
   try {
     const { CLAUDECODE, ...cleanEnv } = process.env;
     const { stdout } = await execFileAsync(command, ["-p", prompt], {
       maxBuffer: 4 * 1024 * 1024,
       env: cleanEnv,
+      timeout: timeoutMs,
     });
     return ok(stdout.trim());
   } catch (cause) {
