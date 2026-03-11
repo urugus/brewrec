@@ -28,6 +28,7 @@ export const formatLocalLlmError = (error: LocalLlmError): string => {
 };
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+const MAX_BUFFER_BYTES = 10 * 1024 * 1024; // 10 MB
 
 const spawnWithStdin = (
   command: string,
@@ -40,14 +41,38 @@ const spawnWithStdin = (
     const child = spawn(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let killed = false;
     const timer = setTimeout(() => {
+      killed = true;
       child.kill("SIGTERM");
       reject({ code: undefined, signal: "SIGTERM", message: `timeout after ${timeoutMs}ms` });
     }, timeoutMs);
     child.stdout.on("data", (d: Buffer) => {
+      stdoutBytes += d.length;
+      if (stdoutBytes > MAX_BUFFER_BYTES) {
+        if (!killed) {
+          killed = true;
+          child.kill("SIGTERM");
+          clearTimeout(timer);
+          reject({ code: undefined, signal: "SIGTERM", message: "stdout exceeded max buffer" });
+        }
+        return;
+      }
       stdout += d.toString();
     });
     child.stderr.on("data", (d: Buffer) => {
+      stderrBytes += d.length;
+      if (stderrBytes > MAX_BUFFER_BYTES) {
+        if (!killed) {
+          killed = true;
+          child.kill("SIGTERM");
+          clearTimeout(timer);
+          reject({ code: undefined, signal: "SIGTERM", message: "stderr exceeded max buffer" });
+        }
+        return;
+      }
       stderr += d.toString();
     });
     child.on("error", (e: NodeJS.ErrnoException) => {

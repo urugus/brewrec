@@ -2,6 +2,7 @@ import { type Result, err, ok } from "neverthrow";
 import { eventsToCompileResult } from "../core/compile-heuristic.js";
 import { applyCredentialVariables } from "../core/credential-vars.js";
 import { exists, recipePath } from "../core/fs.js";
+import { refineStepsWithLlm } from "../core/llm-refine.js";
 import { formatLocalLlmError, runLocalClaudeResult } from "../core/llm.js";
 import {
   formatRecipeStoreError,
@@ -46,7 +47,23 @@ export const compileServiceResult = async (
   progress({ type: "info", message: `Compiling ${events.length} events...` });
 
   const { steps: rawSteps, stats } = eventsToCompileResult(events);
-  const { steps, variables: secretVars } = applyCredentialVariables(rawSteps, events);
+  const { steps: heuristicSteps, variables: secretVars } = applyCredentialVariables(
+    rawSteps,
+    events,
+  );
+
+  progress({ type: "info", message: "Refining steps with LLM..." });
+  const refineResult = await refineStepsWithLlm(heuristicSteps, events, options.llmCommand);
+  let steps = heuristicSteps;
+  if (refineResult.isOk()) {
+    steps = refineResult.value;
+    progress({ type: "info", message: `LLM refined: ${steps.length} steps` });
+  } else {
+    progress({
+      type: "warn",
+      message: `LLM refinement skipped: ${formatLocalLlmError(refineResult.error)}`,
+    });
+  }
 
   const llmSummaryResult = await runLocalClaudeResult(buildPrompt(events), options.llmCommand);
   const llmSummary = llmSummaryResult.isOk() ? llmSummaryResult.value : "";
