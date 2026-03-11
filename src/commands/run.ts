@@ -402,13 +402,41 @@ const saveHttpDownloadIfNeeded = async (
   }
 };
 
-const setupDownloadHandler = (page: Page, downloadDir: string): void => {
-  page.on("download", async (download) => {
-    const filename = download.suggestedFilename();
-    const savePath = path.join(downloadDir, filename);
-    await download.saveAs(savePath);
-    process.stderr.write(`  Downloaded: ${savePath}\n`);
+const DOWNLOAD_TIMEOUT_MS = 30_000;
+
+const awaitDownloads = async (pendingDownloads: Promise<void>[]): Promise<void> => {
+  if (pendingDownloads.length === 0) return;
+  await Promise.race([
+    Promise.allSettled(pendingDownloads),
+    new Promise((resolve) => setTimeout(resolve, DOWNLOAD_TIMEOUT_MS)),
+  ]);
+};
+
+const setupDownloadHandler = (
+  page: Page,
+  downloadDir: string,
+): { pendingDownloads: Promise<void>[]; errors: string[] } => {
+  const pendingDownloads: Promise<void>[] = [];
+  const errors: string[] = [];
+  page.on("download", (download) => {
+    const promise = (async () => {
+      const rawFilename = download.suggestedFilename();
+      const filename = sanitizeFilename(rawFilename);
+      const uniqueResult = await ensureUniquePathResult(path.join(downloadDir, filename));
+      if (uniqueResult.isErr()) {
+        throw new Error(uniqueResult.error);
+      }
+      const savePath = uniqueResult.value;
+      await download.saveAs(savePath);
+      process.stderr.write(`  Downloaded: ${savePath}\n`);
+    })().catch((e) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(msg);
+      process.stderr.write(`  Download failed: ${msg}\n`);
+    });
+    pendingDownloads.push(promise);
   });
+  return { pendingDownloads, errors };
 };
 
 const extractHostnameForGuardUrl = (guardValue: string): string | undefined => {
@@ -557,13 +585,17 @@ export const runPlanSteps = async (
   let pwContext: BrowserContext | null = null;
   let page: Page | null = null;
   let httpContext: APIRequestContext | undefined;
+  let pendingDownloads: Promise<void>[] = [];
+  let downloadErrors: string[] = [];
 
   try {
     if (hasPwStep) {
       browser = await chromium.launch({ headless: true });
       pwContext = await browser.newContext({ acceptDownloads: true });
       page = await pwContext.newPage();
-      setupDownloadHandler(page, downloadDir);
+      const dlHandler = setupDownloadHandler(page, downloadDir);
+      pendingDownloads = dlHandler.pendingDownloads;
+      downloadErrors = dlHandler.errors;
     }
 
     let pageUrl: string | undefined;
@@ -650,6 +682,10 @@ export const runPlanSteps = async (
       message: causeMessage(cause),
     });
   } finally {
+    await awaitDownloads(pendingDownloads);
+    if (downloadErrors.length > 0) {
+      process.stderr.write(`  Download errors: ${downloadErrors.join("; ")}\n`);
+    }
     if (httpContext) {
       try {
         await httpContext.dispose();
@@ -692,13 +728,17 @@ export const runPlanStepsWithAutoHeal = async (
   let pwContext: BrowserContext | null = null;
   let page: Page | null = null;
   let httpContext: APIRequestContext | undefined;
+  let pendingDownloads: Promise<void>[] = [];
+  let downloadErrors: string[] = [];
 
   try {
     if (hasPwStep) {
       browser = await chromium.launch({ headless: true });
       pwContext = await browser.newContext({ acceptDownloads: true });
       page = await pwContext.newPage();
-      setupDownloadHandler(page, downloadDir);
+      const dlHandler = setupDownloadHandler(page, downloadDir);
+      pendingDownloads = dlHandler.pendingDownloads;
+      downloadErrors = dlHandler.errors;
     }
 
     let pageUrl: string | undefined;
@@ -791,6 +831,10 @@ export const runPlanStepsWithAutoHeal = async (
       message: causeMessage(cause),
     });
   } finally {
+    await awaitDownloads(pendingDownloads);
+    if (downloadErrors.length > 0) {
+      process.stderr.write(`  Download errors: ${downloadErrors.join("; ")}\n`);
+    }
     if (httpContext) {
       try {
         await httpContext.dispose();
@@ -822,13 +866,17 @@ const runPlanStepsWithHeal = async (
   let context: BrowserContext | null = null;
   let page: Page | null = null;
   let httpContext: APIRequestContext | undefined;
+  let pendingDownloads: Promise<void>[] = [];
+  let downloadErrors: string[] = [];
 
   try {
     if (hasPwStep) {
       browser = await chromium.launch({ headless: false });
       context = await browser.newContext({ acceptDownloads: true });
       page = await context.newPage();
-      setupDownloadHandler(page, downloadDir);
+      const dlHandler = setupDownloadHandler(page, downloadDir);
+      pendingDownloads = dlHandler.pendingDownloads;
+      downloadErrors = dlHandler.errors;
     }
 
     const healRecordBuffer: RecordedEvent[] = [];
@@ -1061,6 +1109,10 @@ const runPlanStepsWithHeal = async (
       message: causeMessage(cause),
     });
   } finally {
+    await awaitDownloads(pendingDownloads);
+    if (downloadErrors.length > 0) {
+      process.stderr.write(`  Download errors: ${downloadErrors.join("; ")}\n`);
+    }
     if (httpContext) {
       try {
         await httpContext.dispose();

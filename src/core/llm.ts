@@ -1,8 +1,5 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { type Result, err, ok } from "neverthrow";
-
-const execFileAsync = promisify(execFile);
 
 export type LocalLlmError = {
   kind: "command_failed";
@@ -30,6 +27,71 @@ export const formatLocalLlmError = (error: LocalLlmError): string => {
   return `LLM command failed (${error.command}): ${details.join(", ")}`;
 };
 
+const DEFAULT_TIMEOUT_MS = 120_000;
+const MAX_BUFFER_BYTES = 10 * 1024 * 1024; // 10 MB
+
+const spawnWithStdin = (
+  command: string,
+  args: string[],
+  input: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<{ stdout: string; code: number | null; signal: string | null }> => {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let killed = false;
+    const timer = setTimeout(() => {
+      killed = true;
+      child.kill("SIGTERM");
+      reject({ code: undefined, signal: "SIGTERM", message: `timeout after ${timeoutMs}ms` });
+    }, timeoutMs);
+    child.stdout.on("data", (d: Buffer) => {
+      stdoutBytes += d.length;
+      if (stdoutBytes > MAX_BUFFER_BYTES) {
+        if (!killed) {
+          killed = true;
+          child.kill("SIGTERM");
+          clearTimeout(timer);
+          reject({ code: undefined, signal: "SIGTERM", message: "stdout exceeded max buffer" });
+        }
+        return;
+      }
+      stdout += d.toString();
+    });
+    child.stderr.on("data", (d: Buffer) => {
+      stderrBytes += d.length;
+      if (stderrBytes > MAX_BUFFER_BYTES) {
+        if (!killed) {
+          killed = true;
+          child.kill("SIGTERM");
+          clearTimeout(timer);
+          reject({ code: undefined, signal: "SIGTERM", message: "stderr exceeded max buffer" });
+        }
+        return;
+      }
+      stderr += d.toString();
+    });
+    child.on("error", (e: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      reject({ code: e.code, signal: undefined });
+    });
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ stdout, code, signal });
+      } else {
+        reject({ code, signal, stderr });
+      }
+    });
+    child.stdin.write(input);
+    child.stdin.end();
+  });
+};
+
 const parseProcessFailure = (
   cause: unknown,
 ): { reason: LocalLlmError["reason"]; code?: string | number; signal?: string } => {
@@ -49,11 +111,11 @@ const parseProcessFailure = (
 export const runLocalClaudeResult = async (
   prompt: string,
   command = "claude",
+  timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<Result<string, LocalLlmError>> => {
   try {
-    const { stdout } = await execFileAsync(command, ["-p", prompt], {
-      maxBuffer: 4 * 1024 * 1024,
-    });
+    const { CLAUDECODE, ...cleanEnv } = process.env;
+    const { stdout } = await spawnWithStdin(command, ["-p", "-"], prompt, cleanEnv, timeoutMs);
     return ok(stdout.trim());
   } catch (cause) {
     const failure = parseProcessFailure(cause);
